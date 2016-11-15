@@ -11,7 +11,7 @@
 #include "transport.h"
 #include "../protocol.h"
 
-struct p9_req_t *get_request(void);
+struct p9_req_t *p9_get_request(void);
 void p9_client_begin_disconnect(struct p9_client *clnt);
 void p9_client_disconnect(struct p9_client *clnt);
 #define P9CLNT_MTX(_sc) &(_sc)->p9clnt_mtx
@@ -53,14 +53,14 @@ p9_parse_opts(struct mount  *mp, struct p9_client *clnt)
 	return error;
 }
 
-static struct p9_fcall *p9_fcall_alloc(int alloc_msize)
+static struct p9_buffer *p9_buffer_alloc(int alloc_msize)
 {
-	struct p9_fcall *fc;
-	fc = p9_malloc(sizeof(struct p9_fcall) + alloc_msize);
+	struct p9_buffer *fc;
+	fc = p9_malloc(sizeof(struct p9_buffer) + alloc_msize);
 	if (!fc)
 		return NULL;
 	fc->capacity = alloc_msize;
-	fc->sdata = (char *) fc + sizeof(struct p9_fcall);
+	fc->sdata = (char *) fc + sizeof(struct p9_buffer);
 	return fc;
 }
 
@@ -70,12 +70,6 @@ static void p9_free_req(struct p9_req_t *r)
 	free(r, M_TEMP);
 }
 
-/**
- * p9_client_cb - call back from transport to client
- * c: client state
- * req: request received
- *
- */
 void p9_client_cb(struct p9_client *c, struct p9_req_t *req)
 {
 	
@@ -100,7 +94,7 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...);
 
 /* This will be called for every request
  * We will do pool and stuff later.*/
-struct p9_req_t *get_request(void)
+struct p9_req_t *p9_get_request(void)
 {
 	struct p9_req_t *req;
 	int alloc_msize = 8192;
@@ -108,9 +102,9 @@ struct p9_req_t *get_request(void)
 	req = p9_malloc(sizeof(*req));
 	if (req == NULL) return NULL;
 	if (!req->tc)
-		req->tc = p9_fcall_alloc(alloc_msize);
+		req->tc = p9_buffer_alloc(alloc_msize);
 	if (!req->rc)
-		req->rc = p9_fcall_alloc(alloc_msize);
+		req->rc = p9_buffer_alloc(alloc_msize);
 	
 	if (req->tc == NULL || req->rc == NULL) 
 		return NULL;
@@ -131,11 +125,10 @@ static struct p9_req_t *p9_client_prepare_req(struct p9_client *c,
 		return NULL;
 
 	/* if status is begin_disconnected we allow only clunk request */
-	if ((c->status == BeginDisconnect) && (type != P9_TCLUNK))
+	if ((c->status == BeginDisconnect) && (type != P9PROTO_TCLUNK))
 		return NULL;
 
-	// allocate the request.
-	req = get_request();
+	req = p9_get_request();
 	if (req == NULL)
 	{
 		return NULL;
@@ -181,7 +174,7 @@ again:
 		       	PRIBIO, "p9_virtio", 0);
 
 	if ((err == -ERESTARTSYS) && (c->status == Connected)
-				  && (type == P9_TFLUSH)) {
+				  && (type == P9PROTO_TFLUSH)) {
 		goto again;
 	}
 
@@ -260,15 +253,15 @@ int p9_client_version(struct p9_client *c)
 
 	switch (c->proto_version) {
 	case p9_proto_2000L:
-		req = p9_client_request(c, P9_TVERSION, "ds",
+		req = p9_client_request(c, P9PROTO_TVERSION, "ds",
 					c->msize, "9P2000.L");
 		break;
 	case p9_proto_2000u:
-		req = p9_client_request(c, P9_TVERSION, "ds",
+		req = p9_client_request(c, P9PROTO_TVERSION, "ds",
 					c->msize, "9P2000.u");
 		break;
 	case p9_proto_legacy:
-		req = p9_client_request(c, P9_TVERSION, "ds",
+		req = p9_client_request(c, P9PROTO_TVERSION, "ds",
 					c->msize, "9P2000");
 		break;
 	default:
@@ -422,8 +415,8 @@ struct p9_fid *p9_client_attach(struct p9_client *clnt)
 
 	/* Woah giving access to everyone  ? */
 	/* Get uname from mount and stick it in this function. */ 
-	req = p9_client_request(clnt, P9_TATTACH, "ddss?u", fid->fid,
-			P9_NOFID, 0, NULL, 0);
+	req = p9_client_request(clnt, P9PROTO_TATTACH, "ddss?u", fid->fid,
+			P9PROTO_NOFID, 0, NULL, 0);
 	if (req == NULL) {
 		goto error;
 	}
@@ -459,7 +452,7 @@ int p9_client_detach(struct p9_fid *fid)
 	err = 0;
 	clnt = fid->clnt;
 
-	req = p9_client_request(clnt, P9_TREMOVE, "d", fid->fid);
+	req = p9_client_request(clnt, P9PROTO_TREMOVE, "d", fid->fid);
 	if (req == NULL) {
 		err = -ENOMEM;
 		goto error;
@@ -505,7 +498,7 @@ struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 	p9_debug(TRANS, ">>> TWALK fids %d,%d nwname %ud wname[0] %s\n",
 		 oldfid->fid, fid->fid, nwname, wnames ? wnames[0] : NULL);
 
-	req = p9_client_request(clnt, P9_TWALK, "ddT", oldfid->fid, fid->fid,
+	req = p9_client_request(clnt, P9PROTO_TWALK, "ddT", oldfid->fid, fid->fid,
 								nwname, wnames);
 	if (req == NULL) {
 		err = -ENOMEM;
@@ -570,9 +563,9 @@ int p9_client_open(struct p9_fid *fid, int mode)
 		return -EINVAL;
 
 	if (p9_is_proto_dotl(clnt))
-		req = p9_client_request(clnt, P9_TLOPEN, "dd", fid->fid, mode);
+		req = p9_client_request(clnt, P9PROTO_TLOPEN, "dd", fid->fid, mode);
 	else
-		req = p9_client_request(clnt, P9_TOPEN, "db", fid->fid, mode);
+		req = p9_client_request(clnt, P9PROTO_TOPEN, "db", fid->fid, mode);
 	if (req == NULL) {
 		return -ENOMEM;
 	}
@@ -610,7 +603,7 @@ struct p9_wstat *p9_client_stat(struct p9_fid *fid)
 	err = 0;
 	clnt = fid->clnt;
 
-	req = p9_client_request(clnt, P9_TSTAT, "d", fid->fid);
+	req = p9_client_request(clnt, P9PROTO_TSTAT, "d", fid->fid);
 	if (req == NULL) {
 		goto error;
 	}
@@ -646,7 +639,7 @@ struct p9_stat_dotl *p9_client_getattr_dotl(struct p9_fid *fid,
 	err = 0;
 	clnt = fid->clnt;
 
-	req = p9_client_request(clnt, P9_TGETATTR, "dq", fid->fid, request_mask);
+	req = p9_client_request(clnt, P9PROTO_TGETATTR, "dq", fid->fid, request_mask);
 	if (req ==  NULL) {
 		err =-ENOMEM;
 		goto error;
@@ -723,7 +716,7 @@ int p9_client_wstat(struct p9_fid *fid, struct p9_wstat *wst)
 	clnt = fid->clnt;
 	wst->size = p9_client_statsize(wst, clnt->proto_version);
 
-	req = p9_client_request(clnt, P9_TWSTAT, "dwS", fid->fid, wst->size+2, wst);
+	req = p9_client_request(clnt, P9PROTO_TWSTAT, "dwS", fid->fid, wst->size+2, wst);
 	if (req == NULL) {
 		err = -ENOMEM;
 		goto error;
@@ -751,7 +744,7 @@ int p9_client_setattr(struct p9_fid *fid, struct p9_iattr_dotl *p9attr)
 		p9attr->size, p9attr->atime_sec, p9attr->atime_nsec,
 		p9attr->mtime_sec, p9attr->mtime_nsec);
 
-	req = p9_client_request(clnt, P9_TSETATTR, "dI", fid->fid, p9attr);
+	req = p9_client_request(clnt, P9PROTO_TSETATTR, "dI", fid->fid, p9attr);
 
 	if (req == NULL) {
 		err = -ENOMEM;
@@ -774,7 +767,7 @@ int p9_client_statfs(struct p9_fid *fid, struct p9_rstatfs *sb)
 
 	p9_debug(TRANS, ">>> TSTATFS fid %d\n", fid->fid);
 
-	req = p9_client_request(clnt, P9_TSTATFS, "d", fid->fid);
+	req = p9_client_request(clnt, P9PROTO_TSTATFS, "d", fid->fid);
 	if (req == NULL) {
 		err = -ENOMEM;
 		goto error;
@@ -821,7 +814,7 @@ int p9_client_readdir(struct p9_fid *fid, char *data, uint32_t count, uint64_t o
 	if (count < rsize)
 		rsize = count;
 
-	req = p9_client_request(clnt, P9_TREADDIR, "dqd", fid->fid,
+	req = p9_client_request(clnt, P9PROTO_TREADDIR, "dqd", fid->fid,
 			    offset, rsize);
 	if (req == NULL) {
 		err = -ENOMEM;
