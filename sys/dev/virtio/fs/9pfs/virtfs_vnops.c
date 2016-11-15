@@ -285,14 +285,13 @@ virtfs_readdir(struct vop_readdir_args *ap)
 {
 	struct uio *uio = ap->a_uio;
         struct vnode *vp = ap->a_vp;
-	struct p9_dirent *curdirent = NULL;
         struct dirent dirent;
-        uint64_t file_size, diroffset = 0, transoffset = 0;
+        uint64_t diroffset = 0, transoffset = 0;
 	uint64_t offset;
 	struct virtfs_node *np = ap->a_vp->v_data;
         int error = 0;
 	struct p9_wstat st;
-	char *data;
+	char *data = NULL;
 	struct p9_fid *fid = NULL;
 	struct p9_client *clnt = np->virtfs_ses->clnt;
 
@@ -323,12 +322,12 @@ virtfs_readdir(struct vop_readdir_args *ap)
 #endif // Directory entry 
 
 	offset = 0;
-	while (offset < clnt->msize) {
+	while (data && offset < clnt->msize) {
 
 		/* Read and make sense out of the buffer in one dirent
 		 * This is part of 9p protocol read.
 		 */
-		error = p9stat_read(fid->clnt, data + offset,
+		error = p9_client_statread(fid->clnt, data + offset,
 				    sizeof(struct p9_wstat),
 				    &st);
 		if (error < 0) {
@@ -338,7 +337,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 
 		memset(&dirent, 0, sizeof(struct dirent));
 		// Convert the qid into ino and then put into dirent.
-		memcpy(&dirent.d_fileno, &st.qid, sizeof(st.>qid));
+		//memcpy(&dirent.d_fileno, &st.qid, sizeof(st.>qid));
 		if (dirent.d_fileno) {
 			dirent.d_type = st.type;
 			strncpy(dirent.d_name, st.name, strlen(st.name));
@@ -365,9 +364,6 @@ virtfs_readdir(struct vop_readdir_args *ap)
 
 	/* Pass on last transferred offset */
 	uio->uio_offset = transoffset;
-
-	if (ap->a_eofflag)
-		*ap->a_eofflag = (uio->uio_offset >= file_size);
 
 	return (error);
 }

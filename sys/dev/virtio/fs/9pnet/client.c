@@ -839,3 +839,9 @@ free_and_error:
 error:
 	return err;
 }
+
+int p9_client_statread(struct p9_client *clnt, char *data, size_t len, 
+struct p9_wstat *st)
+{
+	return p9stat_read(clnt, data, len, *st);
+}
