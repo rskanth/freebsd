@@ -6,7 +6,7 @@
 #include "../9p.h"
 #include "../client.h"
 #include "transport.h"
-#include "../protocol.h"
+#include "protocol.h"
 
 #include <sys/module.h>
 #include <sys/sglist.h>
@@ -211,7 +211,7 @@ static int vt9p_attach(device_t dev)
 	 * id=fs0,fsdev=fsdev0,mount_tag=hostshare
 	 */
 	name_len = strlen("hostshare");
-	chan->chan_name = p9_malloc(name_len);
+	chan->chan_name = malloc(name_len, M_TEMP,  M_WAITOK | M_ZERO);
 	if (!chan->chan_name) {
 		err = -ENOMEM;
 		goto out_p9_free_vq;
@@ -239,9 +239,9 @@ static int vt9p_attach(device_t dev)
 	return 0;
 
 out_p9_free_vq:
-	p9_free(chan->chan_name, name_len);
+	free(chan->chan_name, M_TEMP);
 	/// Free the vq here otherwise it might leak.
-	p9_free(chan, sizeof(*chan));
+	free(chan, M_TEMP);
 	return err;
 }
 
@@ -324,7 +324,7 @@ static int vt9p_remove(device_t vt9p_dev)
 
 	// AGain call the vq deletion here otherwise it might leak.
 
-	p9_free(chan->chan_name, strlen(chan->chan_name));
+	free(chan->chan_name, M_TEMP);
 	return 0;
 }
 

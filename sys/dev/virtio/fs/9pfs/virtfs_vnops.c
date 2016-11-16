@@ -327,7 +327,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 		/* Read and make sense out of the buffer in one dirent
 		 * This is part of 9p protocol read.
 		 */
-		error = p9_client_statread(fid->clnt, data + offset,
+		error = p9stat_read(fid->clnt, data + offset,
 				    sizeof(struct p9_wstat),
 				    &st);
 		if (error < 0) {

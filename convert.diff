@@ -1,0 +1,887 @@
+diff --git a/sys/dev/virtio/fs/9pfs/virtfs_vfops.c b/sys/dev/virtio/fs/9pfs/virtfs_vfops.c
+index 53614b3..93b035d 100644
+--- a/sys/dev/virtio/fs/9pfs/virtfs_vfops.c
++++ b/sys/dev/virtio/fs/9pfs/virtfs_vfops.c
+@@ -1,418 +1,466 @@
++/*-
++*
++ * Plan9 filesystem (9P2000.u) implementation.
++ * This file consists of all the VFS interactions.
++ */
+ 
+  #include <sys/cdefs.h>
+   __FBSDID("$FreeBSD$");
+    
+    -#include <sys/param.h>
+    -#include <sys/vnode.h>
+    -#include <sys/mount.h>
+     #include <sys/types.h>
+     -#include <sys/malloc.h>
+     -#include <sys/kernel.h>
+      #include <sys/systm.h>
+      -#include <sys/dirent.h>
+      +#include <sys/mount.h>
+      +#include <sys/kernel.h>
+      +#include <sys/malloc.h>
+      +#include <sys/mutex.h>
+      +#include <sys/protosw.h>
+      +#include <sys/sockopt.h>
+      +#include <sys/socketvar.h>
+      +#include <sys/pcpu.h>
+      +#include <sys/proc.h>
+      +#include <sys/vnode.h>
+      +#include <sys/fnv_hash.h>
+      +#include <sys/fcntl.h>
+      +#include <sys/priv.h>
+      +#include <geom/geom.h>
+      +#include <geom/geom_vfs.h>
+       #include <sys/namei.h>
+        
+	 #include "virtfs_proto.h"
+	 -#include "virtfs.h"
+	  #include "../client.h"
+	  +#include "../9p.h"
+	  +#include "virtfs.h"
+	   
+	   +static const char *p9_opts[] = {
+	   +       "debug",
+	   +       "from", /* This is the imp parameter for now . */
+	   +       "proto",
+	   +       "noatime",
+	   +       NULL
+	   +};
+	    
+	    -struct vop_vector virtfs_vnops;
+	    -static MALLOC_DEFINE(M_P9NODE, "virtfs_node", "virtfs node structures");
+	    +static MALLOC_DEFINE(M_P9MNT, "virtfs_mount", "Mount structures for virtfs");
+	     
+	      static int
+	      -virtfs_lookup(struct vop_cachedlookup_args *ap)
+	      +virtfs_unmount(struct mount *mp, int mntflags)
+	       {
+	       -       /* direnode */
+	       -       struct vnode *dvp = ap->a_dvp;
+	       -       struct vnode **vpp = ap->a_vpp, *vp;
+	       -       struct componentname *cnp = ap->a_cnp;
+	       -       struct virtfs_node *dnp = dvp->v_data; /*dir p9_node */
+	       -       struct virtfs_session *p9s = dnp->virtfs_ses;
+	       -       struct mount *mp = p9s->virtfs_mount; /* Get the mount point */
+	       -       struct p9_fid *newfid;
+	       -       int error = 0;
+	       -
+	       -       *vpp = NULL;
+	       +       struct virtfs_mount *vmp = VFSTOP9(mp);
+	       +       int error, flags, i;
+	        
+		-       /* Special case: lookup a directory from itself. */
+		-       if (cnp->cn_namelen == 1 && *cnp->cn_nameptr == '.') {
+		-               *vpp = dvp;
+		-               vref(*vpp);
+		+       error = 0;
+		+       flags = 0;
+		+       if (vmp == NULL)
+		                return (0);
+				-       }
+				 
+				 -       /* The clone has to be set to get a new fid */
+				 -       newfid = p9_client_walk(dnp->vfid,
+				 -           cnp->cn_namelen, &cnp->cn_nameptr, 1);
+				 -       if (error == 0) {
+				 -               int ltype = 0;
+				 +       if (mntflags & MNT_FORCE)
+				 +               flags |= FORCECLOSE;
+				  
+				  -               if (cnp->cn_flags & ISDOTDOT) {
+				  -                       ltype = VOP_ISLOCKED(dvp);
+				  -                       VOP_UNLOCK(dvp, 0);
+				  -               }
+				  -               /* Vget gets the vp for the newly created vnode. Stick it to the virtfs_node too*/
+				  -               error = virtfs_vget(mp, newfid->fid, cnp->cn_lkflags, &vp);
+				  -               if (cnp->cn_flags & ISDOTDOT)
+				  -                       vn_lock(dvp, ltype | LK_RETRY);
+				  +       for (i = 0; i < 10; i++) {
+				  +               /* Flush everything on this mount point.
+				  +                * This anyways doesnt do anything now.*/
+				  +               error = vflush(mp, 0, flags, curthread);
+				  +               if (error == 0 || (mntflags & MNT_FORCE) == 0)
+				  +                       break;
+				  +               /* Sleep until interrupted or 1 tick expires. */
+				  +               error = tsleep(&error, PSOCK, "p9unmnt", 1);
+				  +               if (error == EINTR)
+				  +                       break;
+				  +               error = EBUSY;
+				          }
+					  -       if (error == 0) {
+					  -               *vpp = vp;
+					  -               vref(*vpp);
+					  -       } else
+					  -               ;//virtfs_relfid(p9s, newfid);
+					  +       if (error != 0)
+					  +               goto out;
+					   
+					   +       virtfs_close_session(mp);
+					   +       free(vmp, M_P9MNT);
+					   +       mp->mnt_data = NULL;
+					   +
+					   +out:
+					           return (error);
+						    }
+						     
+						     -/* We ll implement this once mount works fine .*/
+						     -static int
+						     -virtfs_create(struct vop_create_args *ap)
+						     -{
+						     -       return 0;
+						     -}
+						     +/* For the root vnode's vnops. */
+						     +extern struct vop_vector virtfs_vnops;
+						      
+						      -static int
+						      -virtfs_mknod(struct vop_mknod_args *ap)
+						      -{
+						      -       
+						      -       return 0;
+						      +#if 0 
+						      +struct virtfs_mount {
+						      +       int p9_debuglevel;
+						      +       struct virtfs_session virtfs_session;
+						      +       struct mount *virtfs_mount;
+						      +       char p9_hostname[256];
+						       }
+						       +/* A Plan9 node. */
+						       +struct virtfs_node {
+						       +        uint32_t p9n_fid;
+						       +        uint32_t p9n_ofid;
+						       +        uint32_t p9n_opens;
+						       +        struct virtfs_qid vqid;
+						       +        struct vnode *v_node;
+						       +        struct virtfs_session *p9n_session;
+						       +};
+						        
+							-static int
+							-virtfs_open(struct vop_open_args *ap)
+							+#define MAXUNAMELEN     32
+							+struct virtfs_session {
+							+
+							+     unsigned char flags;
+							+     unsigned char nodev;
+							+     unsigned short debug;
+							+     unsigned int afid;
+							+     unsigned int cache;
+							+     // These look important .
+							+     struct mount *p9s_mount;
+							+     struct virtfs_node p9s_rootnp;
+							+     char *uname;        /* user name to mount as */
+							+     char *aname;        /* name of remote hierarchy being mounted */
+							+     unsigned int maxdata;   /* max data for client interface */
+							+     kuid_t dfltuid;     /* default uid/muid for legacy support */
+							+     kgid_t dfltgid;     /* default gid for legacy support */
+							+     kuid_t uid;     /* if ACCESS_SINGLE, the uid that has access */
+							+     struct p9_client *clnt; /* 9p client */
+							+     struct list_head slist; /* list of sessions registered with v9fs */
+							+     mtx_lock p9s_lock;
+							+
+							+#endif
+							+
+							+/* This is a vfs ops routiune so defining it here instead of vnops. This 
+							+   needs some fixing(a wrapper moslty when we need create to work. Ideally
+							+   it should call this, initialize the virtfs_node and create the fids and qids
+							+   for interactions*/
+							+int virtfs_vget(mp, ino, flags, vpp)
+							+        struct mount *mp;
+							+        ino_t ino;
+							+        int flags;
+							+        struct vnode **vpp;
+							 {
+							 -       int error = 0;
+							 -       struct virtfs_node *np = ap->a_vp->v_data;
+							 -       struct p9_fid *fid = np->vfid;
+							 -       struct p9_wstat *stat;
+							 -       size_t filesize;
+							 +       struct virtfs_mount *vmp;
+							 +       struct virtfs_node *p9_node;
+							 +       struct virtfs_session *p9s;
+							 +       struct vnode *vp;
+							 +       //struct cdev *dev;
+							 +       struct thread *td;
+							 +       struct p9_stat_dotl *st = NULL;
+							 +       struct p9_fid *fid = NULL;
+							 +       int error;
+							  
+							  -       if (np->v_opens > 0) {
+							  -               np->v_opens++;
+							  -               return (0);
+							  +       td = curthread;
+							  +       error = vfs_hash_get(mp, ino, flags, td, vpp, NULL, NULL);
+							  +       if (error || *vpp != NULL)
+							  +               return (error);
+							  +
+							  +       /*
+							  +        * We must promote to an exclusive lock for vnode creation.  This
+							  +        * can happen if lookup is passed LOCKSHARED.
+							  +        */
+							  +       if ((flags & LK_TYPE_MASK) == LK_SHARED) {
+							  +               flags &= ~LK_TYPE_MASK;
+							  +               flags |= LK_EXCLUSIVE;
+							          }
+								   
+								   -       stat  = p9_client_stat(np->vfid);
+								   -       if (error != 0)
+								   -               return (error);
+								   +       vmp = VFSTOP9(mp);
+								    
+								    -       if (ap->a_vp->v_type == VDIR) {
+								    -               if (np->vofid == NULL) {
+								    -
+								    -                       /*ofid is the open fid for this file.*/
+								    -                       /* Note: Client_walk returns struct p9_fid* */
+								    -                       np->vofid = p9_client_walk(np->vfid,
+								    -                            0, NULL, 1); /* Clone the fid here.*/
+								    -                       if (error != 0) {
+								    -                               np->vofid = NULL;
+								    -                               return (error);
+								    -                       }
+								    -               }
+								    -               fid = np->vofid;
+								    +       /* Allocate a new vnode. */
+								    +       if ((error = getnewvnode("virtfs", mp, &virtfs_vnops, &vp)) != 0) {
+								    +               *vpp = NULLVP;
+								    +               return (error);
+								            }
+									     
+									     -       filesize = np->inode.i_size; 
+									     -       /* Use the newly created fid for the open.*/
+									     -       error = p9_client_open(fid, ap->a_mode);
+									     -       if (error == 0) {
+									     -               np->v_opens = 1;
+									     -               vnode_create_vobject(ap->a_vp, filesize, ap->a_td);
+									     +       p9s = &vmp->virtfs_session;
+									     +       p9_node = malloc(sizeof(struct virtfs_node), M_TEMP,
+									     +           M_WAITOK | M_ZERO);
+									     +       vp->v_data = p9_node;
+									     +       /* This should be initalized in the caller of this routine */
+									     +       //p9_node->p9n_fid = fid;  /* Nodes fid*/
+									     +       p9_node->v_node = vp; /* map the vnode to ondisk*/
+									     +       p9_node->virtfs_ses = p9s; /* Map the current session */
+									     +
+									     +       lockmgr(vp->v_vnlock, LK_EXCLUSIVE, NULL);
+									     +       error = insmntque(vp, mp);
+									     +       if (error != 0) {
+									     +               free(p9_node, M_TEMP);
+									     +               *vpp = NULLVP;
+									     +               return (error);
+									             }
+										     +       error = vfs_hash_insert(vp, ino, flags, td, vpp, NULL, NULL);
+										     +       if (error || *vpp != NULL)
+										     +               return (error);
+										      
+										      -       return (error);
+										      -}
+										      +       /* The common code for vfs mount is done. Now we do the 9pfs 
+										      +        * specifc mount code. */
+										       
+										       -static int
+										       -virtfs_close(struct vop_close_args *ap)
+										       -{
+										       -       struct virtfs_node *np = ap->a_vp->v_data;
+										       -
+										       -       printf("%s(fid %d ofid %d opens %d)\n", __func__,
+										       -           np->vfid->fid, np->vofid->fid, np->v_opens);
+										       -       np->v_opens--;
+										       -       if (np->v_opens == 0) {
+										       -               //virtfs_relfid(np->virtfs_ses, np->vofid);
+										       -               np->vofid = 0;
+										       +       if (virtfs_proto_dotl(p9s)) {
+										       +               st = p9_client_getattr_dotl(fid, P9_STATS_BASIC);
+										       +               if (st == NULL) {
+										       +                       error = -ENOMEM;
+										       +                       goto out;
+										       +               }
+										       +               //vp->v_type = st->va_type;
+										       +
+										       +               /* copy back the qid into the p9node also,.*/
+										       +               memcpy(&p9_node->vqid, &st->qid, sizeof(st->qid));
+										       +
+										       +               /* Init the vnode with the disk info*/
+										       +                virtfs_stat_vnode_dotl(st, vp);
+										       +               /* There needs to be quite a few changes to M_TEMPS to have
+										       +               pools for each structure */
+										       +                free(st, M_TEMP);
+										       +
+										       +        } else {
+										       +                struct p9_wstat *st = NULL;
+										       +                st = p9_client_stat(fid);
+										       +                if (st == NULL) {
+										       +                        error = -ENOMEM;
+										       +                        goto out;
+										       +                }
+										       +
+										       +               //vp->v_type = st->va_type;
+										       +               memcpy(&p9_node->vqid, &st->qid, sizeof(st->qid));
+										       +
+										       +               /* Init the vnode with the disk info*/
+										       +                virtfs_stat_vnode_dotl(st, vp);
+										       +                free(st, M_TEMP);
+										               }
+											        
+												+       *vpp = vp;
+												        return (0);
+													+out:
+													+       return error;
+													 }
+													  
+													  +/* Main mount function for 9pfs*/
+													   static int
+													   -virtfs_getattr(struct vop_getattr_args *ap)
+													   +p9_mount(struct vnode *devvp, struct mount *mp)
+													    {
+													    -/*     struct virtfs_node *np = ap->a_vp->v_data;
+													    -       ap->a_vap = p9_client_stat(np->vfid);
+													    -       */
+													    +       struct p9_fid *fid;
+													    +       struct virtfs_mount *vmp = NULL;
+													    +       struct virtfs_session *p9s;
+													    +       struct cdev *dev;
+													    +       struct virtfs_node *root;
+													    +       int error = EINVAL;
+													    +       struct g_consumer *cp;
+													    +
+													    +       dev = devvp->v_rdev;
+													    +       dev_ref(dev);
+													    +       g_topology_lock();
+													    +       error = g_vfs_open(devvp, &cp, "virtfs", 0);
+													    +       g_topology_unlock();
+													    +       VOP_UNLOCK(devvp, 0);
+													    +
+													    +       if (error)
+													    +               goto out;
+													    +       if (devvp->v_rdev->si_iosize_max != 0)
+													    +               mp->mnt_iosize_max = devvp->v_rdev->si_iosize_max;
+													    +       if (mp->mnt_iosize_max > MAXPHYS)
+													    +               mp->mnt_iosize_max = MAXPHYS;
+													    +
+													    +       /* Allocate and initialize the private mount structure. */
+													    +       vmp = malloc(sizeof (struct virtfs_mount), M_TEMP, M_WAITOK | M_ZERO);
+													    +       mp->mnt_data = vmp;
+													    +       vmp->virtfs_mountp = mp;
+													    +       p9s = &vmp->virtfs_session;
+													    +       p9s->virtfs_mount = mp;
+													    +       root = &p9s->rnp;
+													    +
+													    +       fid = virtfs_init_session(mp);
+													    +       root->v_node = devvp;
+													    +       root->vfid = fid;
+													    +       root->virtfs_ses = p9s; /*session ptr structure .*/
+													    +
+													    +       struct p9_stat_dotl *st = NULL;
+													    +
+													    +       /* Create the stat structure to init the vnode */
+													    +       if (virtfs_proto_dotl(p9s)) {
+													    +               st = p9_client_getattr_dotl(fid, P9_STATS_BASIC);
+													    +               if (st == NULL) {
+													    +                       error = -ENOMEM;
+													    +                       goto out;
+													    +               }
+													    +               memcpy(&root->vqid, &st->qid, sizeof(st->qid));
+													    +               /* Init the vnode with the disk info*/
+													    +                virtfs_stat_vnode_dotl(st, root->v_node);
+													    +                free(st, M_TEMP);
+													    +        } else {
+													    +                struct p9_wstat *st = NULL;
+													    +                st = p9_client_stat(fid);
+													    +                if (st == NULL) {
+													    +                        error = -ENOMEM;
+													    +                        goto out;
+													    +                }
+													    +
+													    +               memcpy(&root->vqid, &st->qid, sizeof(st->qid));
+													    +               /* Init the vnode with the disk info*/
+													    +                virtfs_stat_vnode_dotl(st, root->v_node);
+													    +                free(st, M_TEMP);
+													    +       }
+													    +
+													    +       mp->mnt_stat.f_fsid.val[0] = dev2udev(dev);
+													    +       mp->mnt_stat.f_fsid.val[1] = mp->mnt_vfc->vfc_typenum;
+													    +       mp->mnt_maxsymlinklen = 0;
+													    +       MNT_ILOCK(mp);
+													    +       mp->mnt_flag |= MNT_LOCAL;
+													    +       mp->mnt_kern_flag |= MNTK_LOOKUP_SHARED | MNTK_EXTENDED_SHARED;
+													    +       MNT_IUNLOCK(mp);
+													    +       /* Mount structures created. */
+													     
+													             return 0;
+														     +out:
+														     +       if (cp != NULL) {
+														     +               g_topology_lock();
+														     +               g_vfs_close(cp);
+														     +               g_topology_unlock();
+														     +       }
+														     +       if (vmp) {
+														     +               free(vmp, M_TEMP);
+														     +               mp->mnt_data = NULL;
+														     +       }
+														     +       dev_rel(dev);
+														     +       return error;
+														      }
+														       
+														        #if 0
+															-// make sure this version works first.
+															-struct p9_wstat {
+															-        uint16_t size;
+															-        uint16_t type;
+															-        uint32_t dev;
+															-        struct p9_qid qid;
+															-        uint32_t mode;
+															-        uint32_t atime;
+															-        uint32_t mtime;
+															-        uint64_t length;
+															-        char *name;
+															-        char *uid;
+															-        char *gid;
+															-        char *muid;
+															-        char *extension;        /* 9p2000.u extensions */
+															-        uid_t n_uid;            /* 9p2000.u extensions */
+															-        gid_t n_gid;            /* 9p2000.u extensions */
+															-        uid_t n_muid;           /* 9p2000.u extensions */
+															+struct virtfs_mount {
+															+       int p9_debuglevel;
+															+       struct virtfs_session virtfs_session;
+															+       struct mount *virtfs_mount;
+															+       char p9_hostname[256];
+															+};
+															+#if 0 
+															+/* A Plan9 node. */
+															+struct virtfs_node {
+															+        uint32_t p9n_fid;
+															+        uint32_t p9n_ofid;
+															+        uint32_t p9n_opens;
+															+        struct virtfs_qid vqid;
+															+        struct vnode *v_node;
+															+        struct virtfs_session *p9n_session;
+															 };
+															  
+															  -#endif  
+															  +#define MAXUNAMELEN     32
+															  +struct virtfs_session {
+															  +
+															  +     unsigned char flags;
+															  +     unsigned char nodev;
+															  +     unsigned short debug;
+															  +     unsigned int afid;
+															  +     unsigned int cache;
+															  +     struct mount *p9s_mount;
+															  +     struct virtfs_node p9s_rootnp;
+															  +     unsigned int maxdata;   /* max data for client interface */
+															  +     uid_t uid;     /* if ACCESS_SINGLE, the uid that has access */
+															  +     struct p9_client *clnt; /* 9p client */
+															  +     mtx_lock p9s_lock;
+															   
+															   -int
+															   -virtfs_stat_vnode(void *st, struct vnode *vp)
+															   -{
+															   -       struct virtfs_node *np = vp->v_data;
+															   -       struct virtfs_inode *inode = &np->inode;
+															   -       struct virtfs_session *v9s = np->virtfs_ses;
+															   -
+															   -       if (virtfs_proto_dotl(v9s)) {
+															   -
+															   -               struct p9_stat_dotl *stat = (struct p9_stat_dotl *)st;
+															   -               /* Just get the needed fields for now. We can add more later. */
+															   -                inode->i_mtime = stat->st_mtime_sec;
+															   -                inode->i_ctime = stat->st_ctime_sec;
+															   -                inode->i_uid = stat->st_uid;
+															   -                inode->i_gid = stat->st_gid;
+															   -                inode->i_blocks = stat->st_blocks;
+															   -               inode->i_mode = stat->st_mode;
+															   -       }
+															   -       else {
+															   -               struct p9_wstat *stat = (struct p9_wstat *)st;
+															   -               inode->i_mtime = stat->mtime;   
+															   -               inode->i_ctime = stat->atime;
+															   -               inode->i_uid = stat->uid;
+															   -                inode->i_gid = stat->gid;
+															   -               inode->i_mode = stat->mode;
+															   -
+															   -               memcpy(&np->vqid, &stat->qid, sizeof(stat->qid));
+															   -#if 0
+															   -       uint64_t        i_blocks;
+															   -        uint64_t        i_size;
+															   -        uint64_t        i_ctime;
+															   -        uint64_t        i_mtime;
+															   -        uint32_t        i_uid;
+															   -        uint32_t        i_gid;
+															   -        uint16_t        i_mode;
+															   -        uint32_t        i_flags;       
+															    #endif
+															    -               
+															    -       }
+															    -
+															    -       return 0;
+															    -}
+															    -
+															    -static int
+															    -virtfs_setattr(struct vop_setattr_args *ap)
+															    -{
+															    -       return 0;
+															    -}
+															    -
+															    -static int
+															    -virtfs_read(struct vop_read_args *ap)
+															    -{
+															    -       return 0;
+															    -}
+															     
+															     -static int
+															     -virtfs_write(struct vop_write_args *ap)
+															     -{
+															     -       return 0;
+															     -}
+															     +#endif
+															      
+															      +/* Mount entry point */
+															       static int
+															       -virtfs_fsync(struct vop_fsync_args *ap)
+															       +virtfs_mount(struct mount *mp)
+															        {
+																-       return 0;
+																-}
+																+       int error = 0;
+																+       struct vnode *devvp;
+																+       struct thread *td;
+																+       char *fspec;
+																+       int flags;
+																+       struct nameidata ndp;
+																+
+																+       /* No support for UPDATe for now */
+																+       if (mp->mnt_flag & MNT_UPDATE)
+																+               return EOPNOTSUPP;
+																+
+																+       if (vfs_filteropt(mp->mnt_optnew, p9_opts))
+																+               goto out;
+																+
+																+       fspec = vfs_getopts(mp->mnt_optnew, "from", &error);
+																+        if (error)
+																+                return (error);
+																+
+																+       td = curthread;
+																+
+																+       /*
+																+       ** Not an update, or updating the name: look up the name
+																+       ** and verify that it refers to a sensible disk device.
+																+       **/
+																+       NDINIT(&ndp, LOOKUP, FOLLOW | LOCKLEAF, UIO_SYSSPACE, fspec, td);
+																+       if ((error = namei(&ndp)) != 0)
+																+               return (error);
+																+       NDFREE(&ndp, NDF_ONLY_PNBUF);
+																+       devvp = ndp.ni_vp;
+																+       if (!vn_isdisk(devvp, &error)) {
+																+               vput(devvp);
+																+               return (error);
+																+       }
+																+       flags = FREAD;
+																+
+																+       /* Determine if type of source file is supported (VREG or VCHR)
+																+       ** If mount by non-root, then verify that user has necessary
+																+       ** permissions on the device.
+																+       **/
+																+
+																+       if (devvp->v_type == VREG) {
+																+               DROP_GIANT();
+																+               error = vn_open_vnode(devvp, flags, td->td_ucred, td, NULL);
+																+               PICKUP_GIANT();
+																+       } else if (vn_isdisk(devvp, &error) == 0) {
+																+               error = VOP_ACCESS(devvp, VREAD, td->td_ucred, td);
+																+               if (error != 0)
+																+                       error = priv_check(td, PRIV_VFS_MOUNT_PERM);
+																+       }
+																+       if (error != 0) {
+																+               vput(devvp);
+																+               return error;
+																+       }
+																 
+																 -static int
+																 -virtfs_remove(struct vop_remove_args *ap)
+																 -{
+																 -       return 0; 
+																 -}
+																 +       if ((error = p9_mount(devvp, mp)))
+																 +       {
+																 +               vrele(devvp);
+																 +               return error;
+																 +       }
+																  
+																  -static int
+																  -virtfs_link(struct vop_link_args *ap)
+																  -{
+																          return 0;
+																	  +out:
+																	  +       if (error != 0)
+																	  +               (void) virtfs_unmount(mp, MNT_FORCE);
+																	  +       return (error);
+																	   }
+																	    
+																	     static int
+																	     -virtfs_rename(struct vop_rename_args *ap)
+																	     +virtfs_root(struct mount *mp, int lkflags, struct vnode **vpp)
+																	      {
+																	      -       return 0;
+																	      -}
+																	      +       struct virtfs_mount *vmp = VFSTOP9(mp);
+																	      +       struct virtfs_node *np = &vmp->virtfs_session.rnp;
+																	       
+																	       -static int
+																	       -virtfs_mkdir(struct vop_mkdir_args *ap)
+																	       -{
+																	       -       return 0;
+																	       -}
+																	       +       *vpp = np->v_node;
+																	       +       vref(*vpp);
+																	       +       vn_lock(*vpp, lkflags);
+																	        
+																		-static int
+																		-virtfs_rmdir(struct vop_rmdir_args *ap)
+																		-{
+																		-       return 0;
+																		+       return (0);
+																		 }
+																		  
+																		   static int
+																		   -virtfs_symlink(struct vop_symlink_args *ap)
+																		   +virtfs_statfs(struct mount *mp, struct statfs *sbp)
+																		    {
+																		            return 0;
+																			     }
+																			      
+																			      -/*
+																			      - * Minimum length for a directory entry: size of fixed size section of
+																			      - * struct dirent plus a 1 byte C string for the name.
+																			      - */
+																			      -static int
+																			      -virtfs_readdir(struct vop_readdir_args *ap)
+																			      -{
+																			      -       struct uio *uio = ap->a_uio;
+																			      -        struct vnode *vp = ap->a_vp;
+																			      -       struct p9_dirent *curdirent = NULL;
+																			      -        struct dirent dirent;
+																			      -        uint64_t file_size, diroffset = 0, transoffset = 0;
+																			      -       uint64_t offset;
+																			      -       struct virtfs_node *np = ap->a_vp->v_data;
+																			      -        int error = 0;
+																			      -       char *data;
+																			      -       struct p9_fid *fid = NULL;
+																			      -       struct p9_client *clnt = np->virtfs_ses->clnt;
+																			      -       /* Allocate space for the data to get readdir entries */
+																			      -       data = malloc(clnt->msize, M_TEMP,
+																			      -                   M_WAITOK | M_ZERO);
+																			      -       if (ap->a_uio->uio_iov->iov_len <= 0)
+																			      -               return (EINVAL);
+																			      -
+																			      -       if (vp->v_type != VDIR)
+																			      -               return (ENOTDIR);
+																			      -
+																			      -       /* This should have the updated value always.*/
+																			      -       file_size = np->inode.i_size;
+																			      -
+																			      -       /* We are called just as long as we keep on pushing data in */
+																			      -       error = 0;
+																			      -       if ((uio->uio_offset < file_size) &&
+																			      -           (uio->uio_resid >= sizeof(struct dirent))) {
+																			      -               diroffset = uio->uio_offset;
+																			      -               transoffset = diroffset;
+																			      -
+																			      -               /* Our version of the readdir through the virtio. The data buf has the 
+																			      -                * data block information. Now parse through the buf and make the dirent.
+																			      -                */
+																			      -               error = p9_client_readdir(np->vofid, (char *)data,
+																			      -               clnt->msize, 0); /* The max size our client can handle */
+																			      -
+																			      -               if (error) {
+																			      -                       return (EIO);
+																			      -               }
+																			      -       }
+																			      -#if 0
+																			      -       struct p9_dirent {
+																			      -        struct p9_qid qid;
+																			      -        uint64_t d_off;
+																			      -        unsigned char d_type;
+																			      -        char d_name[256];
+																			      -};
+																			      -#endif // Directory entry 
+																			      -
+																			      -       offset = 0;
+																			      -       while (diroffset < file_size) {
+																			      -
+																			      -               /* Read and make sense out of the buffer in one dirent
+																			      -                * This is part of 9p protocol read.
+																			      -                */
+																			      -               error = p9dirent_read(fid->clnt, data + offset,
+																			      -                                   sizeof(curdirent),
+																			      -                                   curdirent);
+																			      -               if (error < 0) {
+																			      -                       p9_debug(VFS, "returned %d\n", error);
+																			      -                       return -EIO;                                             
+																			      -               }
+																			      -
+																			      -               memset(&dirent, 0, sizeof(struct dirent));
+																			      -               memcpy(&dirent.d_fileno, &curdirent->qid, sizeof(curdirent->qid));
+																			      -               if (dirent.d_fileno) {
+																			      -                       dirent.d_type = curdirent->d_type;
+																			      -                       strncpy(dirent.d_name, curdirent->d_name, strlen(curdirent->d_name));
+																			      -                       dirent.d_reclen = GENERIC_DIRSIZ(&dirent);
+																			      -               }
+																			      -
+																			      -               /*
+																			      -                * If there isn't enough space in the uio to return a
+																			      -                * whole dirent, break off read
+																			      -                */
+																			      -               if (uio->uio_resid < GENERIC_DIRSIZ(&dirent))
+																			      -                       break;
+																			      -
+																			      -               /* Transfer */
+																			      -               if (dirent.d_fileno)
+																			      -                       uiomove(&dirent, GENERIC_DIRSIZ(&dirent), uio);
+																			      -
+																			      -               /* Advance */
+																			      -               diroffset += dirent.d_reclen;
+																			      -               offset += dirent.d_reclen;
+																			      -
+																			      -               transoffset = diroffset;
+																			      -       }
+																			      -
+																			      -       /* Pass on last transferred offset */
+																			      -       uio->uio_offset = transoffset;
+																			      -
+																			      -       if (ap->a_eofflag)
+																			      -               *ap->a_eofflag = (uio->uio_offset >= file_size);
+																			      -
+																			      -       return (error);
+																			      -}
+																			      -
+																			       static int
+																			       -virtfs_readlink(struct vop_readlink_args *ap)
+																			       +virtfs_fhtovp(struct mount *mp, struct fid *fhp, int flags, struct vnode **vpp)
+																			        {
+																				-       return 0;
+																				+       return (EINVAL);
+																				 }
+																				  
+																				   static int
+																				   -virtfs_inactive(struct vop_inactive_args *ap)
+																				   +virtfs_sync(struct mount *mp, int waitfor)
+																				    {
+																				            return (0);
+																					     }
+																					      
+																					      -struct vop_vector virtfs_vnops = {
+																					      -       .vop_default =          &default_vnodeops,
+																					      -       .vop_lookup =           vfs_cache_lookup,
+																					      -       .vop_cachedlookup =     virtfs_lookup,
+																					      -       .vop_open =             virtfs_open,
+																					      -       .vop_close =            virtfs_close,
+																					      -       .vop_getattr =          virtfs_getattr,
+																					      -       .vop_setattr =          virtfs_setattr,
+																					      -       .vop_readdir =          virtfs_readdir,
+																					      -       .vop_create =           virtfs_create,
+																					      -       .vop_mknod =            virtfs_mknod,
+																					      -       .vop_read =             virtfs_read,
+																					      -       .vop_write =            virtfs_write,
+																					      -       .vop_fsync =            virtfs_fsync,
+																					      -       .vop_remove =           virtfs_remove,
+																					      -       .vop_link =             virtfs_link,
+																					      -       .vop_rename =           virtfs_rename,
+																					      -       .vop_mkdir =            virtfs_mkdir,
+																					      -       .vop_rmdir =            virtfs_rmdir,
+																					      -       .vop_symlink =          virtfs_symlink,
+																					      -       .vop_readlink =         virtfs_readlink,
+																					      -       .vop_inactive =         virtfs_inactive,
+																					      +struct vfsops virtfs_vfsops = {
+																					      +       .vfs_mount =    virtfs_mount,
+																					      +       .vfs_unmount =  virtfs_unmount,
+																					      +       .vfs_root =     virtfs_root,
+																					      +       .vfs_statfs =   virtfs_statfs,
+																					      +       .vfs_fhtovp =   virtfs_fhtovp,
+																					      +       .vfs_sync =     virtfs_sync,
+																					      +       .vfs_vget =     virtfs_vget,      /* Most imp vnode_get function.*/
+																					       };
+																					       +VFS_SET(virtfs_vfsops, virtfs, VFCF_JAIL);
+																					       diff --git a/sys/dev/virtio/fs/9pfs/virtfs_vnops.c b/sys/dev/virtio/fs/9pfs/virtfs_vnops.c
+																					       index bf841b0..167a516 100644
+																					       --- a/sys/dev/virtio/fs/9pfs/virtfs_vnops.c
+																					       +++ b/sys/dev/virtio/fs/9pfs/virtfs_vnops.c
+																					       @@ -285,14 +285,13 @@ virtfs_readdir(struct vop_readdir_args *ap)
+																					        {
+																						        struct uio *uio = ap->a_uio;
+																							         struct vnode *vp = ap->a_vp;
+																								 -       struct p9_dirent *curdirent = NULL;
+																								          struct dirent dirent;
+																									  -        uint64_t file_size, diroffset = 0, transoffset = 0;
+																									  +        uint64_t diroffset = 0, transoffset = 0;
+																									          uint64_t offset;
+																										          struct virtfs_node *np = ap->a_vp->v_data;
+																											           int error = 0;
+																												           struct p9_wstat st;
+																													   -       char *data;
+																													   +       char *data = NULL;
+																													           struct p9_fid *fid = NULL;
+																														           struct p9_client *clnt = np->virtfs_ses->clnt;
+																															    
+																															    @@ -323,12 +322,12 @@ virtfs_readdir(struct vop_readdir_args *ap)
+																															     #endif // Directory entry 
+																															      
+																															              offset = 0;
+																																      -       while (offset < clnt->msize) {
+																																      +       while (data && offset < clnt->msize) {
+																																       
+																																                       /* Read and make sense out of the buffer in one dirent
+																																		                        * This is part of 9p protocol read.
+																																					                 */
+																																							 -               error = p9stat_read(fid->clnt, data + offset,
+																																							 +               error = p9_client_statread(fid->clnt, data + offset,
+																																							                                     sizeof(struct p9_wstat),
+																																											                                         &st);
+																																																                 if (error < 0) {
+																																																		 @@ -338,7 +337,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
+																																																		  
+																																																		                  memset(&dirent, 0, sizeof(struct dirent));
+																																																				                  // Convert the qid into ino and then put into dirent.
+																																																						  -               memcpy(&dirent.d_fileno, &st.qid, sizeof(st.>qid));
+																																																						  +               //memcpy(&dirent.d_fileno, &st.qid, sizeof(st.>qid));
+																																																						                  if (dirent.d_fileno) {
+																																																								                          dirent.d_type = st.type;
+																																																											                          strncpy(dirent.d_name, st.name, strlen(st.name));
+																																																														  @@ -366,9 +365,6 @@ virtfs_readdir(struct vop_readdir_args *ap)
+																																																														          /* Pass on last transferred offset */
+																																																															          uio->uio_offset = transoffset;
+																																																																   
+																																																																   -       if (ap->a_eofflag)
+																																																																   -               *ap->a_eofflag = (uio->uio_offset >= file_size);
+																																																																   -
+																																																																           return (error);
+																																																																	    }
+																																																																	     
+																																																																	     diff --git a/sys/dev/virtio/fs/9pnet/client.c b/sys/dev/virtio/fs/9pnet/client.c
+																																																																	     index a25308c..a084d25 100644
+																																																																	     --- a/sys/dev/virtio/fs/9pnet/client.c
+																																																																	     +++ b/sys/dev/virtio/fs/9pnet/client.c
+																																																																	     @@ -839,3 +839,9 @@ free_and_error:
+																																																																	      error:
+																																																																	              return err;
+																																																																		       }
+																																																																		       +
+																																																																		       +int p9_client_statread(struct p9_client *clnt, char *data, size_t len, 
+																																																																		       +struct p9_wstat *st)
+																																																																		       +{
+																																																																		       +       return p9stat_read(clnt, data, len, *st);
+																																																																		       +}
+																																																																		       diff --git a/sys/dev/virtio/fs/client.h b/sys/dev/virtio/fs/client.h
+																																																																		       index 48d26fb..0f16900 100644
+																																																																		       --- a/sys/dev/virtio/fs/client.h
+																																																																		       +++ b/sys/dev/virtio/fs/client.h
+																																																																		       @@ -121,6 +121,7 @@ int p9_client_setattr(struct p9_fid *fid, struct p9_iattr_dotl *attr);
+																																																																		        
+																																																																			 struct p9_stat_dotl *p9_client_getattr(struct p9_fid *fid, uint64_t request_mask);
+																																																																			  struct p9_stat_dotl *p9_client_getattr_dotl(struct p9_fid *fid, uint64_t request_mask);
+																																																																			  +int p9_client_statread(struct p9_client *clnt, char *data, size_t len, struct p9_wstat *st);
+																																																																			   int p9_is_proto_dotu(struct p9_client *clnt);
+																																																																			    int p9_is_proto_dotl(struct p9_client *clnt);
+																																																																			     void p9_client_cb(struct p9_client *c, struct p9_req_t *req);

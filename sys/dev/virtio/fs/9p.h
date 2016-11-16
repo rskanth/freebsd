@@ -246,7 +246,7 @@ struct p9_rstatfs {
 	uint32_t namelen;
 };
 
-struct p9_fcall {
+struct p9_buffer {
 	uint32_t size;
 	uint8_t id;
 	uint16_t tag;

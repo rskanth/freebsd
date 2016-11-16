@@ -9,7 +9,7 @@
 // ALl local headers move to include and then compile with the include.
 #include "../client.h"
 #include "transport.h"
-#include "../protocol.h"
+#include "protocol.h"
 
 struct p9_req_t *p9_get_request(void);
 void p9_client_begin_disconnect(struct p9_client *clnt);
@@ -56,7 +56,8 @@ p9_parse_opts(struct mount  *mp, struct p9_client *clnt)
 static struct p9_buffer *p9_buffer_alloc(int alloc_msize)
 {
 	struct p9_buffer *fc;
-	fc = p9_malloc(sizeof(struct p9_buffer) + alloc_msize);
+
+	fc = malloc(sizeof(struct p9_buffer) + alloc_msize, M_TEMP, M_WAITOK | M_ZERO);
 	if (!fc)
 		return NULL;
 	fc->capacity = alloc_msize;
@@ -99,7 +100,7 @@ struct p9_req_t *p9_get_request(void)
 	struct p9_req_t *req;
 	int alloc_msize = 8192;
 
-	req = p9_malloc(sizeof(*req));
+	req = malloc(sizeof(*req), M_TEMP, M_WAITOK | M_ZERO);
 	if (req == NULL) return NULL;
 	if (!req->tc)
 		req->tc = p9_buffer_alloc(alloc_msize);
@@ -159,40 +160,27 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 	 * and then send the request for the type. */
 	req = p9_client_prepare_req(c, type, c->msize, fmt, ap);
 	va_end(ap);
+
 	if (req == NULL)
 		return NULL;
 
 	err = c->trans_mod->request(c, req);
+
 	if (err < 0) {
-		if (err != -ERESTARTSYS && err != -EFAULT)
+		if (err == -EIO)
 			c->status = Disconnected;
 		goto reterr;
 	}
-again:
+
 	/* Wait for the response */
 	err = msleep(&req, &req_mtx,
 		       	PRIBIO, "p9_virtio", 0);
-
-	if ((err == -ERESTARTSYS) && (c->status == Connected)
-				  && (type == P9PROTO_TFLUSH)) {
-		goto again;
-	}
 
 	if (req->status == REQ_STATUS_ERROR) {
 		p9_debug(TRANS, "req_status error %d\n", req->t_err);
 		err = req->t_err;
 	}
-	if ((err == -ERESTARTSYS) && (c->status == Connected)) {
-		p9_debug(TRANS, "flushing\n");
 
-		// No support for cancel and flush in the first version
-		//if (c->trans_mod->cancel(c, req))
-			//p9_client_flush(c, req);
-
-		/* if we received the response anyway, don't signal error */
-		if (req->status == REQ_STATUS_RCVD)
-			err = 0;
-	}
 	if (err < 0)
 		goto reterr;
 
@@ -213,7 +201,7 @@ static struct p9_fid *p9_fid_create(struct p9_client *clnt)
 	struct p9_fid *fid;
 
 	p9_debug(TRANS, "clnt %p\n", clnt);
-	fid = p9_malloc(sizeof(struct p9_fid));
+	fid = malloc(sizeof(struct p9_fid), M_TEMP, M_WAITOK | M_ZERO);
 
 	if (!fid)
 		return NULL;
@@ -307,7 +295,7 @@ p9_client_create(struct mount *mp)
 	int err = 0;
 	struct p9_client *clnt;
 
-	clnt = p9_malloc(sizeof(struct p9_client));
+	clnt = malloc(sizeof(struct p9_client), M_TEMP, M_WAITOK | M_ZERO);
 	if (!clnt)
 		goto bail_out;
 
@@ -345,7 +333,7 @@ p9_client_create(struct mount *mp)
 	/* For now avoiding any dev_names being passed from the mount */
 	err = clnt->trans_mod->create(clnt);
 	if (err) {
-		err = -NOCLIENT_ERROR; // add sometghing here.
+		err = -ENOENT; // add sometghing here.
 		goto bail_out;
 	}
 
@@ -359,7 +347,7 @@ p9_client_create(struct mount *mp)
 	return clnt;
 
 bail_out:
-	if (err == -NOCLIENT_ERROR) 
+	if (err == -ENOENT)
 	clnt->trans_mod->close(clnt);
 	if (clnt)
 	free(clnt, M_TEMP);
@@ -462,7 +450,7 @@ int p9_client_detach(struct p9_fid *fid)
 
 	p9_free_req(req);
 error:
-	if (err == -ERESTARTSYS)
+	if (err == -ENOSPC)
 		p9_client_close(fid);
 	else
 		p9_fid_destroy(fid);
@@ -530,11 +518,11 @@ struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 	else
 		fid->qid = oldfid->qid;
 
-	p9_free(wqids, nwqids * sizeof(struct p9_qid));
+	free(wqids, M_TEMP);
 	return fid;
 
 clunk_fid:
-	p9_free(wqids, strlen(wqids));
+	free(wqids, M_TEMP);
 	p9_client_close(fid);
 	fid = NULL;
 
@@ -594,7 +582,7 @@ struct p9_wstat *p9_client_stat(struct p9_fid *fid)
 {
 	int err;
 	struct p9_client *clnt;
-	struct p9_wstat *ret = p9_malloc(sizeof(struct p9_wstat));
+	struct p9_wstat *ret = malloc(sizeof(struct p9_wstat) ,M_TEMP,  M_WAITOK | M_ZERO);
 	struct p9_req_t *req;
 	uint16_t ignored;
 
@@ -628,7 +616,7 @@ struct p9_stat_dotl *p9_client_getattr_dotl(struct p9_fid *fid,
 {
 	int err;
 	struct p9_client *clnt;
-	struct p9_stat_dotl *ret = p9_malloc(sizeof(struct p9_stat_dotl));
+	struct p9_stat_dotl *ret = malloc(sizeof(struct p9_stat_dotl), M_TEMP, M_WAITOK | M_ZERO);
 	struct p9_req_t *req;
 
 	p9_debug(TRANS, ">>> TGETATTR fid %d, request_mask %ld\n",
@@ -673,7 +661,7 @@ struct p9_stat_dotl *p9_client_getattr_dotl(struct p9_fid *fid,
 	return ret;
 
 error:
-	p9_free(ret, sizeof(*ret));
+	free(ret, M_TEMP);
 	return NULL;
 }
 
@@ -838,10 +826,4 @@ free_and_error:
 	p9_free_req(req);
 error:
 	return err;
-}
-
-int p9_client_statread(struct p9_client *clnt, char *data, size_t len, 
-struct p9_wstat *st)
-{
-	return p9stat_read(clnt, data, len, *st);
 }
