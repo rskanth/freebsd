@@ -6,7 +6,7 @@
 #include "../9p.h"
 #include "../client.h"
 #include "transport.h"
-#include "protocol.h"
+#include "../protocol.h"
 
 #include <sys/module.h>
 #include <sys/sglist.h>

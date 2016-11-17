@@ -9,7 +9,7 @@
 // ALl local headers move to include and then compile with the include.
 #include "../client.h"
 #include "transport.h"
-#include "protocol.h"
+#include "../protocol.h"
 
 int p9_debug_level = 0xFFFF;
 

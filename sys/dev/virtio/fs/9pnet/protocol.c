@@ -10,7 +10,7 @@
 #include <sys/types.h>
 #include "../9p.h"
 #include "../client.h"
-#include "protocol.h"
+#include "../protocol.h"
 
 #define cpu_to_le16(x) htons(x)
 #define cpu_to_le32(x) htonl(x)
