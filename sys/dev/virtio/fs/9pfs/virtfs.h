@@ -69,7 +69,7 @@ enum virt_session_flags {
 /* These are all the VIRTFS specific vops */
 //int virtfs_open(struct p9_client *clnt, int mode);
 //int virtfs_close(struct p9_client *clnt);
-int virtfs_stat_vnode_dotl(void *st, struct vnode *vp);
+int virtfs_stat_vnode(void *st, struct vnode *vp);
 int virtfs_proto_dotl(struct virtfs_session *virtfss);
 struct p9_fid *virtfs_init_session(struct mount *mp);
 void virtfs_close_session(struct mount *mp);

@@ -46,14 +46,14 @@ enum p9_req_status_t {
 struct p9_req_t {
 	int status;
 	int t_err;
-	struct p9_fcall *tc;
-	struct p9_fcall *rc;
+	struct p9_buffer *tc;
+	struct p9_buffer *rc;
 	void *aux;
 };
 
 
 struct p9_client {
-	struct mtx lock; /* protect client structure */
+	struct mtx p9clnt_mtx; /* protect client structure */
 	struct cv req_cv;
 	unsigned int msize;
 	unsigned char proto_version;
@@ -121,9 +121,11 @@ int p9_client_setattr(struct p9_fid *fid, struct p9_iattr_dotl *attr);
 
 struct p9_stat_dotl *p9_client_getattr(struct p9_fid *fid, uint64_t request_mask);
 struct p9_stat_dotl *p9_client_getattr_dotl(struct p9_fid *fid, uint64_t request_mask);
+int p9_client_statread(struct p9_client *clnt, char *data, size_t len, struct p9_wstat *st);
 int p9_is_proto_dotu(struct p9_client *clnt);
 int p9_is_proto_dotl(struct p9_client *clnt);
 void p9_client_cb(struct p9_client *c, struct p9_req_t *req);
+int p9stat_read(struct p9_client *clnt, char *data, size_t len, struct p9_wstat *st); 
 struct p9_trans_module *v9fs_get_trans_by_name(char *s);
 
 extern int p9_debug_level; /* All debugs on now */

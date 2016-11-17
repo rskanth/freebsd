@@ -150,16 +150,39 @@ virtfs_getattr(struct vop_getattr_args *ap)
 	return 0;
 }
 
+#if 0
+// make sure this version works first.
+struct p9_wstat {
+        uint16_t size;
+        uint16_t type;
+        uint32_t dev;
+        struct p9_qid qid;
+        uint32_t mode;
+        uint32_t atime;
+        uint32_t mtime;
+        uint64_t length;
+        char *name;
+        char *uid;
+        char *gid;
+        char *muid;
+        char *extension;        /* 9p2000.u extensions */
+        uid_t n_uid;            /* 9p2000.u extensions */
+        gid_t n_gid;            /* 9p2000.u extensions */
+        uid_t n_muid;           /* 9p2000.u extensions */
+};
+
+#endif  
+
 int
-virtfs_stat_vnode_dotl(void *st, struct vnode *vp)
+virtfs_stat_vnode(void *st, struct vnode *vp)
 {
 	struct virtfs_node *np = vp->v_data;
 	struct virtfs_inode *inode = &np->inode;
 	struct virtfs_session *v9s = np->virtfs_ses;
-	struct p9_stat_dotl *stat = (struct p9_stat_dotl *)st;
 
 	if (virtfs_proto_dotl(v9s)) {
 
+		struct p9_stat_dotl *stat = (struct p9_stat_dotl *)st;
 		/* Just get the needed fields for now. We can add more later. */
                 inode->i_mtime = stat->st_mtime_sec;
                 inode->i_ctime = stat->st_ctime_sec;
@@ -168,8 +191,28 @@ virtfs_stat_vnode_dotl(void *st, struct vnode *vp)
                 inode->i_blocks = stat->st_blocks;
 		inode->i_mode = stat->st_mode;
 	}
-	/* What typeof file is it ? */
-	//vp->v_type = stat->mode;
+	else {
+		struct p9_wstat *stat = (struct p9_wstat *)st;
+		inode->i_mtime = stat->mtime;	
+		inode->i_ctime = stat->atime;
+ 	        inode->i_uid = stat->n_uid; /* Make sure you copy the numeric */
+                inode->i_gid = stat->n_gid;
+		inode->i_mode = stat->mode;
+
+		memcpy(&np->vqid, &stat->qid, sizeof(stat->qid));
+#if 0
+	uint64_t        i_blocks;
+        uint64_t        i_size;
+        uint64_t        i_ctime;
+        uint64_t        i_mtime;
+        uint32_t        i_uid;
+        uint32_t        i_gid;
+        uint16_t        i_mode;
+        uint32_t        i_flags;	
+#endif
+		
+	}
+
 	return 0;
 }
 
@@ -242,43 +285,32 @@ virtfs_readdir(struct vop_readdir_args *ap)
 {
 	struct uio *uio = ap->a_uio;
         struct vnode *vp = ap->a_vp;
-	struct p9_dirent *curdirent = NULL;
         struct dirent dirent;
-        uint64_t file_size, diroffset = 0, transoffset = 0;
+        uint64_t diroffset = 0, transoffset = 0;
 	uint64_t offset;
 	struct virtfs_node *np = ap->a_vp->v_data;
         int error = 0;
-	char *data;
+	struct p9_wstat st;
+	char *data = NULL;
 	struct p9_fid *fid = NULL;
 	struct p9_client *clnt = np->virtfs_ses->clnt;
-	/* Allocate space for the data to get readdir entries */
-	data = malloc(clnt->msize, M_TEMP,
-	            M_WAITOK | M_ZERO);
+
 	if (ap->a_uio->uio_iov->iov_len <= 0)
 		return (EINVAL);
 
 	if (vp->v_type != VDIR)
 		return (ENOTDIR);
 
-	/* This should have the updated value always.*/
-	file_size = np->inode.i_size;
-
-	/* We are called just as long as we keep on pushing data in */
 	error = 0;
-	if ((uio->uio_offset < file_size) &&
-	    (uio->uio_resid >= sizeof(struct dirent))) {
-		diroffset = uio->uio_offset;
-		transoffset = diroffset;
 
-		/* Our version of the readdir through the virtio. The data buf has the 
-		 * data block information. Now parse through the buf and make the dirent.
-		 */
-		error = p9_client_readdir(np->vofid, (char *)data,
+	/* Our version of the readdir through the virtio. The data buf has the 
+	 * data block information. Now parse through the buf and make the dirent.
+	 */
+	error = p9_client_readdir(np->vofid, (char *)data,
 		clnt->msize, 0); /* The max size our client can handle */
 
-		if (error) {
-			return (EIO);
-		}
+	if (error) {
+		return (EIO);
 	}
 #if 0
 	struct p9_dirent {
@@ -290,24 +322,25 @@ virtfs_readdir(struct vop_readdir_args *ap)
 #endif // Directory entry 
 
 	offset = 0;
-	while (diroffset < file_size) {
+	while (data && offset < clnt->msize) {
 
 		/* Read and make sense out of the buffer in one dirent
 		 * This is part of 9p protocol read.
 		 */
-		error = p9dirent_read(fid->clnt, data + offset,
-				    sizeof(curdirent),
-				    curdirent);
+		error = p9stat_read(fid->clnt, data + offset,
+				    sizeof(struct p9_wstat),
+				    &st);
 		if (error < 0) {
 			p9_debug(VFS, "returned %d\n", error);
-			return -EIO;                                             
+			return -EIO;
 		}
 
 		memset(&dirent, 0, sizeof(struct dirent));
-		memcpy(&dirent.d_fileno, &curdirent->qid, sizeof(curdirent->qid));
+		// Convert the qid into ino and then put into dirent.
+		//memcpy(&dirent.d_fileno, &st.qid, sizeof(st.>qid));
 		if (dirent.d_fileno) {
-			dirent.d_type = curdirent->d_type;
-			strncpy(dirent.d_name, curdirent->d_name, strlen(curdirent->d_name));
+			dirent.d_type = st.type;
+			strncpy(dirent.d_name, st.name, strlen(st.name));
 			dirent.d_reclen = GENERIC_DIRSIZ(&dirent);
 		}
 
@@ -331,9 +364,6 @@ virtfs_readdir(struct vop_readdir_args *ap)
 
 	/* Pass on last transferred offset */
 	uio->uio_offset = transoffset;
-
-	if (ap->a_eofflag)
-		*ap->a_eofflag = (uio->uio_offset >= file_size);
 
 	return (error);
 }

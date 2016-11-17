@@ -187,7 +187,7 @@ int virtfs_vget(mp, ino, flags, vpp)
 	 * specifc mount code. */
 
 	if (virtfs_proto_dotl(p9s)) {
-		st = p9_client_getattr_dotl(fid, P9_STATS_BASIC);
+		st = p9_client_getattr_dotl(fid, P9PROTO_STATS_BASIC);
         	if (st == NULL) {
 			error = -ENOMEM;
 			goto out;
@@ -198,7 +198,7 @@ int virtfs_vget(mp, ino, flags, vpp)
 		memcpy(&p9_node->vqid, &st->qid, sizeof(st->qid));
 
 		/* Init the vnode with the disk info*/
-                virtfs_stat_vnode_dotl(st, vp);
+                virtfs_stat_vnode(st, vp);
 		/* There needs to be quite a few changes to M_TEMPS to have
 		pools for each structure */
                 free(st, M_TEMP);
@@ -215,7 +215,7 @@ int virtfs_vget(mp, ino, flags, vpp)
 		memcpy(&p9_node->vqid, &st->qid, sizeof(st->qid));
 
 		/* Init the vnode with the disk info*/
-                virtfs_stat_vnode_dotl(st, vp);
+                virtfs_stat_vnode(st, vp);
                 free(st, M_TEMP);
 	}
 
@@ -268,14 +268,14 @@ p9_mount(struct vnode *devvp, struct mount *mp)
 
 	/* Create the stat structure to init the vnode */
 	if (virtfs_proto_dotl(p9s)) {
-		st = p9_client_getattr_dotl(fid, P9_STATS_BASIC);
+		st = p9_client_getattr_dotl(fid, P9PROTO_STATS_BASIC);
         	if (st == NULL) {
 			error = -ENOMEM;
 			goto out;
 		}
 		memcpy(&root->vqid, &st->qid, sizeof(st->qid));
 		/* Init the vnode with the disk info*/
-                virtfs_stat_vnode_dotl(st, root->v_node);
+                virtfs_stat_vnode(st, root->v_node);
                 free(st, M_TEMP);
         } else {
                 struct p9_wstat *st = NULL;
@@ -287,7 +287,7 @@ p9_mount(struct vnode *devvp, struct mount *mp)
 
 		memcpy(&root->vqid, &st->qid, sizeof(st->qid));
 		/* Init the vnode with the disk info*/
-                virtfs_stat_vnode_dotl(st, root->v_node);
+                virtfs_stat_vnode(st, root->v_node);
                 free(st, M_TEMP);
 	}
 

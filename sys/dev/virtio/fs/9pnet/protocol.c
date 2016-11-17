@@ -10,7 +10,7 @@
 #include <sys/types.h>
 #include "../9p.h"
 #include "../client.h"
-#include "../protocol.h"
+#include "protocol.h"
 
 #define cpu_to_le16(x) htons(x)
 #define cpu_to_le32(x) htonl(x)
@@ -20,20 +20,19 @@
 #define le64_to_cpu(x) (x)
 
 static int
-p9pdu_writef(struct p9_fcall *pdu, int proto_version, const char *fmt, ...);
+p9pdu_writef(struct p9_buffer *pdu, int proto_version, const char *fmt, ...);
 void p9stat_p9_free(struct p9_wstat *stbuf);
-int p9stat_read(struct p9_client *clnt, char *buf, int len, struct p9_wstat *st);
 
 void p9stat_p9_free(struct p9_wstat *stbuf)
 {
-	p9_free(stbuf->name, strlen(stbuf->name));
-	p9_free(stbuf->uid, sizeof(stbuf->uid));
-	p9_free(stbuf->gid, sizeof(stbuf->gid));
-	p9_free(stbuf->muid, sizeof(stbuf->muid));
-	p9_free(stbuf->extension, sizeof(stbuf->extension));
+	free(stbuf->name, M_TEMP);
+	free(stbuf->uid, M_TEMP);
+	free(stbuf->gid, M_TEMP);
+	free(stbuf->muid, M_TEMP);
+	free(stbuf->extension, M_TEMP);
 }
 
-size_t pdu_read(struct p9_fcall *pdu, void *data, size_t size)
+size_t pdu_read(struct p9_buffer *pdu, void *data, size_t size)
 {
 	size_t len = min(pdu->size - pdu->offset, size);
 	memcpy(data, &pdu->sdata[pdu->offset], len);
@@ -41,7 +40,7 @@ size_t pdu_read(struct p9_fcall *pdu, void *data, size_t size)
 	return size - len;
 }
 
-static size_t pdu_write(struct p9_fcall *pdu, const void *data, size_t size)
+static size_t pdu_write(struct p9_buffer *pdu, const void *data, size_t size)
 {
 	size_t len = min(pdu->capacity - pdu->size, size);
 	memcpy(&pdu->sdata[pdu->size], data, len);
@@ -68,7 +67,7 @@ static size_t pdu_write(struct p9_fcall *pdu, const void *data, size_t size)
 */
 
 static int
-p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
+p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 	va_list ap)
 {
 	const char *ptr;
@@ -123,14 +122,14 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 				if (errcode)
 					break;
 
-				*sptr = p9_malloc(len + 1);
+				*sptr = malloc(len + 1, M_TEMP, M_NOWAIT);
 				if (*sptr == NULL) {
 					errcode = -EFAULT;
 					break;
 				}
 				if (pdu_read(pdu, *sptr, len)) {
 					errcode = -EFAULT;
-					p9_free(*sptr, sizeof(*sptr));
+					free(*sptr, M_TEMP);
 					*sptr = NULL;
 				} else
 					(*sptr)[len] = 0;
@@ -189,7 +188,7 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 				errcode = p9pdu_readf(pdu, proto_version,
 								"w", nwname);
 				if (!errcode) {
-					*wnames = p9_malloc(sizeof(char *) * *nwname);
+					*wnames = malloc(sizeof(char *) * *nwname, M_TEMP, M_NOWAIT);
 					if (!*wnames)
 						errcode = -ENOMEM;
 				}
@@ -213,9 +212,9 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 						int i;
 
 						for (i = 0; i < *nwname; i++)
-							p9_free((*wnames)[i], sizeof(*wnames[i]));
+							free((*wnames)[i], M_TEMP);
 					}
-					p9_free(*wnames, sizeof(*wnames));
+					free(*wnames, M_TEMP);
 					*wnames = NULL;
 				}
 			}
@@ -231,8 +230,8 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 				    p9pdu_readf(pdu, proto_version, "w", nwqid);
 				if (!errcode) {
 					*wqids =
-					    p9_malloc(*nwqid *
-						    sizeof(struct p9_qid));
+					    malloc(*nwqid *
+						    sizeof(struct p9_qid), M_TEMP, M_NOWAIT);
 					if (*wqids == NULL)
 						errcode = -ENOMEM;
 				}
@@ -252,7 +251,7 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 				}
 
 				if (errcode) {
-					p9_free(*wqids, sizeof(*wqids));
+					free(*wqids, M_TEMP);
 					*wqids = NULL;
 				}
 			}
@@ -301,7 +300,7 @@ p9pdu_vreadf(struct p9_fcall *pdu, int proto_version, const char *fmt,
 }
 
 int
-p9pdu_vwritef(struct p9_fcall *pdu, int proto_version, const char *fmt,
+p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 	va_list ap)
 {
 	const char *ptr;
@@ -444,7 +443,7 @@ p9pdu_vwritef(struct p9_fcall *pdu, int proto_version, const char *fmt,
 	return errcode;
 }
 
-int p9pdu_readf(struct p9_fcall *pdu, int proto_version, const char *fmt, ...)
+int p9pdu_readf(struct p9_buffer *pdu, int proto_version, const char *fmt, ...)
 {
 	va_list ap;
 	int ret;
@@ -457,7 +456,7 @@ int p9pdu_readf(struct p9_fcall *pdu, int proto_version, const char *fmt, ...)
 }
 
 static int
-p9pdu_writef(struct p9_fcall *pdu, int proto_version, const char *fmt, ...)
+p9pdu_writef(struct p9_buffer *pdu, int proto_version, const char *fmt, ...)
 {
 	va_list ap;
 	int ret;
@@ -469,9 +468,9 @@ p9pdu_writef(struct p9_fcall *pdu, int proto_version, const char *fmt, ...)
 	return ret;
 }
 
-int p9stat_read(struct p9_client *clnt, char *buf, int len, struct p9_wstat *st)
+int p9stat_read(struct p9_client *clnt, char *buf, size_t len, struct p9_wstat *st)
 {
-	struct p9_fcall fake_pdu;
+	struct p9_buffer fake_pdu;
 	int ret;
 
 	fake_pdu.size = len;
@@ -487,13 +486,13 @@ int p9stat_read(struct p9_client *clnt, char *buf, int len, struct p9_wstat *st)
 	return ret;
 }
 
-int p9pdu_prepare(struct p9_fcall *pdu, int8_t type)
+int p9pdu_prepare(struct p9_buffer *pdu, int8_t type)
 {
 	pdu->id = type;
 	return p9pdu_writef(pdu, 0, "dbw", 0, type);
 }
 
-int p9pdu_finalize(struct p9_client *clnt, struct p9_fcall *pdu)
+int p9pdu_finalize(struct p9_client *clnt, struct p9_buffer *pdu)
 {
 	int size = pdu->size;
 	int err;
@@ -508,7 +507,7 @@ int p9pdu_finalize(struct p9_client *clnt, struct p9_fcall *pdu)
 	return err;
 }
 
-void p9pdu_reset(struct p9_fcall *pdu)
+void p9pdu_reset(struct p9_buffer *pdu)
 {
 	pdu->offset = 0;
 	pdu->size = 0;
@@ -519,7 +518,7 @@ void p9pdu_reset(struct p9_fcall *pdu)
 int p9dirent_read(struct p9_client *clnt, char *buf, int len,
 		  struct p9_dirent *dirent)
 {
-	struct p9_fcall fake_pdu;
+	struct p9_buffer fake_pdu;
 	int ret;
 	char *nameptr;
 
@@ -536,7 +535,7 @@ int p9dirent_read(struct p9_client *clnt, char *buf, int len,
 	}
 
 	strcpy(dirent->d_name, nameptr);
-	p9_free(nameptr, sizeof(*nameptr));
+	free(nameptr, M_TEMP);
 
 out:
 	return fake_pdu.offset;
