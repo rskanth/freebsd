@@ -27,7 +27,7 @@ __FBSDID("$FreeBSD$");
 #include "virtfs.h"
 
 static MALLOC_DEFINE(M_P9REQ, "virtfsreq", "Request structures for virtfs");
-
+int p9_debug_level = 0xFFFF;
 /*
  * Plan 9 message handling.  This is primarily intended as a means of
  * performing marshalling/unmarshalling.

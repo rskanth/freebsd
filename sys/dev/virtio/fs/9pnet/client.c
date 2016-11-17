@@ -11,6 +11,8 @@
 #include "transport.h"
 #include "../protocol.h"
 
+int p9_debug_level = 0xFFFF;
+
 struct p9_req_t *get_request(void);
 void p9_client_begin_disconnect(struct p9_client *clnt);
 void p9_client_disconnect(struct p9_client *clnt);
@@ -607,6 +609,12 @@ int p9_client_open(struct p9_fid *fid, int mode)
 free_and_error:
 	p9_free_req(req);
 	return err;
+}
+
+int p9_client_close(struct p9_fid *fid)
+{
+	printf("%s: XXX not implemented\n", __func__);
+	return 0;
 }
 
 struct p9_wstat *p9_client_stat(struct p9_fid *fid)

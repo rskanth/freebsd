@@ -338,7 +338,7 @@ static struct p9_trans_module vt9p_trans = {
 };
 
 // move it to mod.c after POC and then get the list setting right later.
-struct p9_trans_module *v9fs_get_trans_by_name(char *s)
+struct p9_trans_module *p9_get_trans_by_name(char *s)
 {
 	//struct p9_trans_module *t, *found = NULL;
 
@@ -351,11 +351,24 @@ struct p9_trans_module *v9fs_get_trans_by_name(char *s)
 			break;
 		}
 	}*/
-	
+
 	//mtx_unlock_spin(&v9fs_trans_lock);
 	return &vt9p_trans;
 	//return found;
 }
+
+struct p9_trans_module *p9_get_default_trans(void)
+{
+	printf("%s: XXX not implemented\n", __func__);
+	return &vt9p_trans;
+
+}
+
+void p9_put_trans(struct p9_trans_module *m)
+{
+	printf("%s: XXX not implemented\n", __func__);
+}
+
 
 static device_method_t vt9p_mthds[] = {
     /* Device methods. */
@@ -394,7 +407,7 @@ vt9p_modevent(module_t mod, int type, void *unused)
     return (error);
 }
 
-DRIVER_MODULE(virtio_blk, virtio_pci, vt9p_drv, vt9p_class,
+DRIVER_MODULE(vt9p, virtio_pci, vt9p_drv, vt9p_class,
 	vt9p_modevent, 0);
 MODULE_VERSION(vt9p, 1);
 MODULE_DEPEND(vt9p, virtio, 1, 1, 1);

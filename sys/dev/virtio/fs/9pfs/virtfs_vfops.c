@@ -464,3 +464,6 @@ struct vfsops virtfs_vfsops = {
 	.vfs_vget =     virtfs_vget,      /* Most imp vnode_get function.*/
 };
 VFS_SET(virtfs_vfsops, virtfs, VFCF_JAIL);
+MODULE_VERSION(vtfs, 1);
+MODULE_DEPEND(vtfs, virtio, 1, 1, 1);
+MODULE_DEPEND(vtfs, vt9p, 1, 1, 1);

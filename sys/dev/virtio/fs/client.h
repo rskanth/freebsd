@@ -126,7 +126,7 @@ int p9_is_proto_dotl(struct p9_client *clnt);
 void p9_client_cb(struct p9_client *c, struct p9_req_t *req);
 struct p9_trans_module *v9fs_get_trans_by_name(char *s);
 
-extern int p9_debug; /* All denugs on now */
+extern int p9_debug_level; /* All debugs on now */
 
 #define P9_DEBUG_TRANS            0x0001
 #define P9_DEBUG_SUBR             0x0002
@@ -140,9 +140,9 @@ extern int p9_debug; /* All denugs on now */
 #define P9_DEBUG_NODE             0x0200
 
 #define p9_debug(category, fmt, ...) \
- do {                             \
-         if ((p9_debug & P9_DEBUG_##category) != 0)  \
+	do {                             \
+		if ((p9_debug_level & P9_DEBUG_##category) != 0)  \
 	                 printf(fmt, ##__VA_ARGS__);  \
-			         } while (0)
+	 } while (0)
 
 #endif /* NET_9P_CLIENT_H */
