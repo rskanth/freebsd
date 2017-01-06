@@ -104,6 +104,9 @@ req_retry:
 		}
 	}
 
+        chan->ring_bufs_avail--;
+        VT9P_UNLOCK(chan);
+
 	p9_debug(TRANS, "virtio request kicked\n");
 	/* We return back to the client and wait there for the submission. */
 	return 0;
@@ -111,7 +114,7 @@ req_retry:
 
 /* Completion of the request from the virt queue. */
 static void
-p9_intr_complete(void *xsc)
+vt9p_intr_complete(void *xsc)
 {
 	struct vt9p_softc *chan;
 	struct virtqueue *vq;
@@ -121,15 +124,18 @@ p9_intr_complete(void *xsc)
 	chan = (struct vt9p_softc *)xsc;
 	vq = chan->vt9p_vq;
 
-    	while (1) {
+        /* Ideally we should be running the loop and copying
+        all the completed requests into a stack queue and co
+        mplte to the upper layers. For now, we are only fini*/
+   	//while (1) {
 		VT9P_LOCK(chan);
 		req = virtqueue_dequeue(chan->vt9p_vq, NULL);
-		if (req == NULL) {
+	/*	if (req == NULL) {
 			VT9P_UNLOCK(chan);
 			break;
-		}
-	}
-	chan->ring_bufs_avail = 1;
+		} */
+	//}
+	chan->ring_bufs_avail++;
  	VT9P_UNLOCK(chan);
 	/* Wakeup if anyone waiting for VirtIO ring space. */
 	cv_signal(&chan->submit_cv);
@@ -160,7 +166,7 @@ static int virtio_alloc_queue(struct vt9p_softc *sc)
     device_t dev = sc->vt9p_dev;
 
     VQ_ALLOC_INFO_INIT(&vq_info, sc->max_nsegs,
-            p9_intr_complete, sc, &sc->vt9p_vq,
+            vt9p_intr_complete, sc, &sc->vt9p_vq,
             "%s request", device_get_nameunit(dev));
 
        return (virtio_alloc_virtqueues(dev, 0, 1, &vq_info));
@@ -229,7 +235,7 @@ static int vt9p_attach(device_t dev)
 	//SLIST_INSERT_TAIL(&chan->chan_list, &vt9p_softc_list);
 	mtx_unlock(&virtio_9p_lock);
 
-	err = virtio_setup_intr(dev, INTR_ENTROPY);
+	err = virtio_setup_intr(dev, INTR_TYPE_BIO | INTR_MPSAFE);
 	if (err) {
 		printf("cannot setup virtqueue interrupt\n");
 		goto out_p9_free_vq;

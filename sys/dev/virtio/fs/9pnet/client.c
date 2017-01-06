@@ -17,9 +17,11 @@ struct p9_req_t *p9_get_request(void);
 void p9_client_begin_disconnect(struct p9_client *clnt);
 void p9_client_disconnect(struct p9_client *clnt);
 #define P9CLNT_MTX(_sc) &(_sc)->p9clnt_mtx
+#define P9REQ_MTX(_sc) &(_sc)->p9req_mtx
 #define P9CLNT_LOCK(_sc) mtx_lock(P9CLNT_MTX(_sc))
 #define P9CLNT_UNLOCK(_sc) mtx_unlock(P9CLNT_MTX(_sc))
 #define P9CLNT_INIT(_sc) mtx_init(P9CLNT_MTX(_sc), "clnt-spin", NULL, MTX_SPIN);
+#define P9REQ_INIT(_sc) mtx_init(P9REQ_MTX(_sc), "Req- mutex lock", NULL, MTX_DEF);
 
 inline int p9_is_proto_dotl(struct p9_client *clnt)
 {
@@ -149,7 +151,6 @@ reterr:
 	return NULL;
 }
 
-struct mtx req_mtx;
 static struct p9_req_t *
 p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 {
@@ -165,7 +166,7 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 
 	if (req == NULL)
 		return NULL;
-
+	/* Call into the transport for submission. */
 	err = c->trans_mod->request(c, req);
 
 	if (err < 0) {
@@ -175,7 +176,7 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 	}
 
 	/* Wait for the response */
-	err = msleep(&req, &req_mtx,
+	err = msleep(&req, P9REQ_MTX(c),
 		       	PRIBIO, "p9_virtio", 0);
 
 	if (req->status == REQ_STATUS_ERROR) {
@@ -338,6 +339,11 @@ p9_client_create(struct mount *mp)
 		err = -ENOENT; // add sometghing here.
 		goto bail_out;
 	}
+
+       	/* Init the client lock */
+        P9CLNT_INIT(clnt);
+        /* Init the request lock for submission */
+        P9REQ_INIT(clnt);
 
 	err = p9_client_version(clnt);
 	if (err)

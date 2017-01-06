@@ -54,6 +54,7 @@ struct p9_req_t {
 
 struct p9_client {
 	struct mtx p9clnt_mtx; /* protect client structure */
+	struct mtx p9req_mtx; // REq mtx for now
 	struct cv req_cv;
 	unsigned int msize;
 	unsigned char proto_version;
