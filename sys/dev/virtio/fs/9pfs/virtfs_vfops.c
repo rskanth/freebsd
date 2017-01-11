@@ -30,7 +30,7 @@ __FBSDID("$FreeBSD$");
 #include "../client.h"
 #include "../9p.h"
 #include "virtfs.h"
-
+#if 0
 static const char *p9_opts[] = {
 	"debug",
 	"from", /* This is the imp parameter for now . */
@@ -38,6 +38,7 @@ static const char *p9_opts[] = {
 	"noatime",
 	NULL
 };
+#endif
 
 static MALLOC_DEFINE(M_P9MNT, "virtfs_mount", "Mount structures for virtfs");
 
@@ -120,7 +121,6 @@ struct virtfs_session {
      mtx_lock p9s_lock;
 
 #endif
-
 /* This is a vfs ops routiune so defining it here instead of vnops. This 
    needs some fixing(a wrapper moslty when we need create to work. Ideally
    it should call this, initialize the virtfs_node and create the fids and qids
@@ -135,7 +135,6 @@ int virtfs_vget(mp, ino, flags, vpp)
 	struct virtfs_node *p9_node;
 	struct virtfs_session *p9s;
 	struct vnode *vp;
-	//struct cdev *dev;
 	struct thread *td;
 	struct p9_stat_dotl *st = NULL;
 	struct p9_fid *fid = NULL;
@@ -227,16 +226,17 @@ out:
 
 /* Main mount function for 9pfs*/
 static int
-p9_mount(struct vnode *devvp, struct mount *mp)
+p9_mount(struct mount *mp)
 {
 	struct p9_fid *fid;
 	struct virtfs_mount *vmp = NULL;
 	struct virtfs_session *p9s;
-	struct cdev *dev;
+	//struct cdev *dev;
 	struct virtfs_node *root;
 	int error = EINVAL;
-	struct g_consumer *cp;
+	//struct g_consumer *cp;
 
+	#if 0
 	dev = devvp->v_rdev;
 	dev_ref(dev);
 	g_topology_lock();
@@ -248,6 +248,7 @@ p9_mount(struct vnode *devvp, struct mount *mp)
 		goto out;
 	if (devvp->v_rdev->si_iosize_max != 0)
 		mp->mnt_iosize_max = devvp->v_rdev->si_iosize_max;
+	#endif
 	if (mp->mnt_iosize_max > MAXPHYS)
 		mp->mnt_iosize_max = MAXPHYS;
 
@@ -260,7 +261,6 @@ p9_mount(struct vnode *devvp, struct mount *mp)
 	root = &p9s->rnp;
 
 	fid = virtfs_init_session(mp);
-	root->v_node = devvp;
 	root->vfid = fid;
 	root->virtfs_ses = p9s; /*session ptr structure .*/
 
@@ -291,27 +291,29 @@ p9_mount(struct vnode *devvp, struct mount *mp)
                 free(st, M_TEMP);
 	}
 
-	mp->mnt_stat.f_fsid.val[0] = dev2udev(dev);
 	mp->mnt_stat.f_fsid.val[1] = mp->mnt_vfc->vfc_typenum;
 	mp->mnt_maxsymlinklen = 0;
 	MNT_ILOCK(mp);
 	mp->mnt_flag |= MNT_LOCAL;
 	mp->mnt_kern_flag |= MNTK_LOOKUP_SHARED | MNTK_EXTENDED_SHARED;
 	MNT_IUNLOCK(mp);
+	printf("mount successful ..\n");
 	/* Mount structures created. */
 
 	return 0;
 out:
+	#if 0
 	if (cp != NULL) {
 		g_topology_lock();
 		g_vfs_close(cp);
 		g_topology_unlock();
 	}
+	#endif
 	if (vmp) {
 		free(vmp, M_TEMP);
 		mp->mnt_data = NULL;
 	}
-	dev_rel(dev);
+	//dev_rel(dev);
 	return error;
 }
 
@@ -357,18 +359,21 @@ static int
 virtfs_mount(struct mount *mp)
 {
 	int error = 0;
-	struct vnode *devvp;
+	#if 0
+.	struct vnode *devvp;
 	struct thread *td;
 	char *fspec;
 	int flags;
 	struct nameidata ndp;
+	#endif
 
 	/* No support for UPDATe for now */
 	if (mp->mnt_flag & MNT_UPDATE)
 		return EOPNOTSUPP;
 
-	if (vfs_filteropt(mp->mnt_optnew, p9_opts))
-		goto out;
+	#if 0
+	if ((error = vfs_filteropt(mp->mnt_optnew, p9_opts)))
+		return error;
 
 	fspec = vfs_getopts(mp->mnt_optnew, "from", &error);
         if (error)
@@ -410,17 +415,33 @@ virtfs_mount(struct mount *mp)
 		return error;
 	}
 
-	if ((error = p9_mount(devvp, mp)))
+	#endif
+	if ((error = p9_mount(mp)))
 	{
-		vrele(devvp);
+		//vrele(devvp);
 		return error;
 	}
 
 	return 0;
-out:
+
+	/*out:
 	if (error != 0)
 		(void) virtfs_unmount(mp, MNT_FORCE);
-	return (error);
+	return (error);*/
+}
+
+
+/* This one only makes the root_vnode. We already have the virtfs_node for this 
+vnode. */
+static int virtfs_make_root(struct mount *mp, struct vnode *vp)
+{
+	int error = 0;
+	/* Allocate a new vnode. */
+	if ((error = getnewvnode("virtfs", mp, &virtfs_vnops, &vp)) != 0) {
+		vp = NULLVP;
+		return (error);
+	}
+	return 0;
 }
 
 static int
@@ -428,8 +449,15 @@ virtfs_root(struct mount *mp, int lkflags, struct vnode **vpp)
 {
 	struct virtfs_mount *vmp = VFSTOP9(mp);
 	struct virtfs_node *np = &vmp->virtfs_session.rnp;
+	int error = 0;
+	printf("abput to make virtfs_make_root ..\n");
 
-	*vpp = np->v_node;
+	if ((error = virtfs_make_root(mp, *vpp))) {
+		*vpp = NULLVP;
+		return error;
+	}
+	np->v_node = *vpp;
+	printf("Successfully initialized root vnode ..\n");
 	vref(*vpp);
 	vn_lock(*vpp, lkflags);
 

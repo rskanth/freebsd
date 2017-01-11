@@ -30,7 +30,7 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 	struct virtfs_node *dnp = dvp->v_data; /*dir p9_node */
 	struct virtfs_session *p9s = dnp->virtfs_ses;
 	struct mount *mp = p9s->virtfs_mount; /* Get the mount point */
-	struct p9_fid *newfid;
+	struct p9_fid *newfid = NULL;
 	int error = 0;
 
 	*vpp = NULL;
@@ -43,9 +43,13 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 	}
 
 	/* The clone has to be set to get a new fid */
+	/* Here we are defaulting it to craete. Is that correct ? 
+	 * Ideally we should be checking if its presnet in the cache.
+	 * is not present, create the new fid and the qid from server
+	 * to map it to the correct vnode */
 	newfid = p9_client_walk(dnp->vfid,
 	    cnp->cn_namelen, &cnp->cn_nameptr, 1);
-	if (error == 0) {
+	if (newfid != NULL) {
 		int ltype = 0;
 
 		if (cnp->cn_flags & ISDOTDOT) {
@@ -60,8 +64,7 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 	if (error == 0) {
 		*vpp = vp;
 		vref(*vpp);
-	} else
-		;//virtfs_relfid(p9s, newfid);
+	} 
 
 	return (error);
 }
@@ -113,7 +116,7 @@ virtfs_open(struct vop_open_args *ap)
 		fid = np->vofid;
 	}
 
-	filesize = np->inode.i_size; 
+	filesize = np->inode.i_size;
 	/* Use the newly created fid for the open.*/
 	error = p9_client_open(fid, ap->a_mode);
 	if (error == 0) {

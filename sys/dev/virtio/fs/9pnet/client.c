@@ -22,6 +22,8 @@ void p9_client_disconnect(struct p9_client *clnt);
 #define P9CLNT_UNLOCK(_sc) mtx_unlock(P9CLNT_MTX(_sc))
 #define P9CLNT_INIT(_sc) mtx_init(P9CLNT_MTX(_sc), "clnt-spin", NULL, MTX_SPIN);
 #define P9REQ_INIT(_sc) mtx_init(P9REQ_MTX(_sc), "Req- mutex lock", NULL, MTX_DEF);
+#define P9REQMTX_LOCK(_sc) mtx_lock(P9REQ_MTX(_sc))
+#define P9REQMTX_UNLOCK(_sc) mtx_unlock(P9REQ_MTX(_sc))
 
 inline int p9_is_proto_dotl(struct p9_client *clnt)
 {
@@ -174,6 +176,7 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 			c->status = Disconnected;
 		goto reterr;
 	}
+	P9REQMTX_LOCK(c);
 
 	/* Wait for the response */
 	err = msleep(&req, P9REQ_MTX(c),
@@ -183,6 +186,7 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 		p9_debug(TRANS, "req_status error %d\n", req->t_err);
 		err = req->t_err;
 	}
+	P9REQMTX_UNLOCK(c);
 
 	if (err < 0)
 		goto reterr;
@@ -292,11 +296,11 @@ error:
 
 #define INT_MAX 1024 // This is the max inode number.
 /* Return the client to the session in the FS to hold it */
-struct p9_client * 
+struct p9_client *
 p9_client_create(struct mount *mp)
 {
 	int err = 0;
-	struct p9_client *clnt;
+	struct p9_client *clnt = NULL;
 
 	clnt = malloc(sizeof(struct p9_client), M_TEMP, M_WAITOK | M_ZERO);
 	if (!clnt)
@@ -311,7 +315,7 @@ p9_client_create(struct mount *mp)
 	if (err < 0)
 		goto bail_out;
 
-	if (!clnt->trans_mod)
+	if (clnt->trans_mod == NULL)
 		clnt->trans_mod = p9_get_default_trans();
 
 	if (clnt->trans_mod == NULL) {
@@ -344,6 +348,7 @@ p9_client_create(struct mount *mp)
         P9CLNT_INIT(clnt);
         /* Init the request lock for submission */
         P9REQ_INIT(clnt);
+	printf("Locks init done ..\n");
 
 	err = p9_client_version(clnt);
 	if (err)
@@ -351,6 +356,7 @@ p9_client_create(struct mount *mp)
 
 	/* Init the lock */
 	P9CLNT_INIT(clnt);
+	printf("Client creation success .\n");
 
 	return clnt;
 
@@ -395,6 +401,9 @@ void p9_client_begin_disconnect(struct p9_client *clnt)
  */
 struct p9_fid *p9_client_attach(struct p9_client *clnt)
 {
+	/* OK there is big whole here ?  WE have to 
+	 * use err somewher , otherise it doesnt make 
+	  * much sense .. we should return that from here */
 	int err = 0;
 	struct p9_req_t *req;
 	struct p9_fid *fid = NULL;

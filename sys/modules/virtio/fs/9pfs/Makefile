@@ -2,7 +2,7 @@
 .include <bsd.own.mk>
 .PATH: ${.CURDIR}/../../../../dev/virtio/fs/9pfs
 
-KMOD    =  9pfs
+KMOD    =  virtio_fs
 
 # Enumerate Source files for kernel module
 SRCS+=  virtfs_subr.c

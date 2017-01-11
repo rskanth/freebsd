@@ -23,9 +23,11 @@
 #define VT9P_MTX(_sc) &(_sc)->vt9p_mtx
 #define VT9P_LOCK(_sc) mtx_lock(VT9P_MTX(_sc))
 #define VT9P_UNLOCK(_sc) mtx_unlock(VT9P_MTX(_sc))
+#define VT9P_INIT(_sc) mtx_init(VT9P_MTX(_sc), "chan_lock", NULL, MTX_DEF);
+//#define VT9P_INIT(mtx)
 
 /* a single mutex to manage channel initialization and attachment */
-struct mtx virtio_9p_lock;
+//struct mtx virtio_9p_lock;
 
 /* We can move this to a new header later if we need.
  * For now we re the only ones using this struct .
@@ -52,11 +54,11 @@ static void vt9p_close(struct p9_client *client)
 {
 	struct vt9p_softc *chan = client->trans;
 
-	mtx_lock(&virtio_9p_lock);
+//	mtx_lock(&virtio_9p_lock);
 	if (chan)
 		chan->inuse = false;
 
-	mtx_unlock(&virtio_9p_lock);
+//	mtx_unlock(&virtio_9p_lock);
 }
 
 /* We don't currently allow canceling of virtio requests */
@@ -120,7 +122,7 @@ vt9p_intr_complete(void *xsc)
 	struct virtqueue *vq;
 	struct p9_req_t *req;
 	//struct req_queue queue;
-
+	printf("intr handler has to hit.. \n");
 	chan = (struct vt9p_softc *)xsc;
 	vq = chan->vt9p_vq;
 
@@ -178,6 +180,7 @@ static int vt9p_probe(device_t dev)
     if (virtio_get_device_type(dev) != VIRTIO_ID_9P)
         return (ENXIO);
     device_set_desc(dev, "VirtIO 9P Transport");
+    printf("Probe successfully .\n");
 
     return (BUS_PROBE_DEFAULT); 
 }
@@ -199,8 +202,16 @@ static int vt9p_attach(device_t dev)
 		goto out_p9_free_vq;
 	}
 
-	mtx_init(&chan->vt9p_mtx, "chan_lock", NULL, MTX_SPIN);
+	VT9P_INIT(chan);
+	/* this lock is for the chan selection in create
+	 * that is still not functional now but just init the lock */
+	//VT9P_INIT(virtio_9p_lock);
 
+	/* Ideally we would want to calculate the number of segements
+	 * from the configuration but for now, Well just make it 
+	 * 3segs. Refer to virtio_block for this number.
+	 */
+	chan->max_nsegs = 3;
 	chan->vt9p_sglist = sglist_alloc(VIRTQUEUE_NUM, M_NOWAIT);
 
 	if (chan->vt9p_sglist == NULL) {
@@ -228,20 +239,21 @@ static int vt9p_attach(device_t dev)
 
 	// Add to this wait queue which will later be woken up.
 	///TAILQ_INIT(&chan->vc_wq);
-	chan->ring_bufs_avail = 1;
+	chan->ring_bufs_avail = 5;
 
 	// Add all of them to the channel list so that we can create(mount) only to one.
-	mtx_lock(&virtio_9p_lock);
+	//mtx_lock(&virtio_9p_lock);
 	//SLIST_INSERT_TAIL(&chan->chan_list, &vt9p_softc_list);
-	mtx_unlock(&virtio_9p_lock);
+	//mtx_unlock(&virtio_9p_lock);
 
-	err = virtio_setup_intr(dev, INTR_TYPE_BIO | INTR_MPSAFE);
+	err = virtio_setup_intr(dev, INTR_TYPE_BIO|INTR_MPSAFE);
 	if (err) {
 		printf("cannot setup virtqueue interrupt\n");
 		goto out_p9_free_vq;
 	}
 	virtqueue_enable_intr(chan->vt9p_vq);
 	global_ctx = chan;
+	printf("Attach successfully \n"); 
 	return 0;
 
 out_p9_free_vq:
@@ -269,11 +281,11 @@ out_p9_free_vq:
 static int
 vt9p_create(struct p9_client *client)
 {
-	struct vt9p_softc *chan;
-	int ret = -ENOENT;
-	int found = 0;
+	struct vt9p_softc *chan =NULL;
+	//int ret = -ENOENT;
+	//int found = 0;
 
-	mtx_lock(&virtio_9p_lock);
+	//mtx_lock(&virtio_9p_lock);
 	/*STAILQ_FOREACH(chan, &vt9p_softc_list, chan_list) {
 		if (!strncmp(devname, chan->chan_name, chan->chan_name_len) &&
 		    strlen(devname) == chan->chan_name_len) {
@@ -289,12 +301,12 @@ vt9p_create(struct p9_client *client)
 	if (global_ctx)
 	chan = global_ctx;
 
-	mtx_unlock(&virtio_9p_lock);
+	//mtx_unlock(&virtio_9p_lock);
 
-	if (!found) {
+	/*if (!found) {
 		printf("no channels available for device %s\n", client->name);
 		return ret;
-	}
+	}*/
 
 	client->trans = (void *)chan;
 	client->status = Connected;
@@ -313,7 +325,7 @@ static int vt9p_remove(device_t vt9p_dev)
 {
 	struct vt9p_softc *chan = device_get_softc(vt9p_dev);
 
-	mtx_lock(&virtio_9p_lock);
+	//mtx_lock(&virtio_9p_lock);
 
 	/* Remove self from list so we don't get new users. */
 	//SLIST_REMOVE(&vt9p_softc_list, chan, vt9p_softc, chan_list);
@@ -326,7 +338,7 @@ static int vt9p_remove(device_t vt9p_dev)
 	}
 	*/
 	chan->inuse = false; 
-	mtx_unlock(&virtio_9p_lock);
+	//mtx_unlock(&virtio_9p_lock);
 
 	// AGain call the vq deletion here otherwise it might leak.
 

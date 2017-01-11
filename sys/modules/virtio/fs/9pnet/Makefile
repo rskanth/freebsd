@@ -2,7 +2,7 @@
 .include <bsd.own.mk>
 .PATH: ${.CURDIR}/../../../../dev/virtio/fs/9pnet
 
-KMOD    =  9ptrans
+KMOD    =  virtio_9p_trans
 
 # Enumerate Source files for kernel module
 SRCS    =  device_if.h bus_if.h opt_cam.h trans_virtio.c client.c protocol.c

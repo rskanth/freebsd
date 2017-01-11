@@ -45,7 +45,7 @@ virtfs_init_session(struct mount *mp)
     struct p9_fid *fid;
     struct virtfs_session *vses;
     struct virtfs_mount *virtmp;
-    int rc = -ENOMEM;
+    //int rc = -ENOMEM;
 
     virtmp = mp->mnt_data;
     vses = &virtmp->virtfs_session;
@@ -53,7 +53,7 @@ virtfs_init_session(struct mount *mp)
 
     vses->clnt = p9_client_create(mp);
 
-    if (rc) {
+    if (vses->clnt) {
         p9_debug(SUBR, "problem initializing 9p client\n");
         goto fail;
     }
@@ -71,16 +71,18 @@ virtfs_init_session(struct mount *mp)
 
     /* Attach with the backend host*/
     fid = p9_client_attach(vses->clnt);
+    printf("attach successful fid :%p\n",fid);
 
     if (fid == NULL) {
 
-        rc = -ENOMEM;
+     //   rc = -ENOMEM;
         p9_debug(SUBR, "cannot attach\n");
 
         goto fail;
     }
 
     fid->uid = vses->uid;
+    printf("virtfs_init_session success \n");
 
     return fid;
 
