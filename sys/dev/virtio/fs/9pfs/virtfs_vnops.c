@@ -28,8 +28,8 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 	struct vnode **vpp = ap->a_vpp, *vp;
 	struct componentname *cnp = ap->a_cnp;
 	struct virtfs_node *dnp = dvp->v_data; /*dir p9_node */
-	struct virtfs_session *p9s = dnp->virtfs_ses;
-	struct mount *mp = p9s->virtfs_mount; /* Get the mount point */
+	//struct virtfs_session *p9s = dnp->virtfs_ses;
+	//struct mount *mp = p9s->virtfs_mount; /* Get the mount point */
 	struct p9_fid *newfid = NULL;
 	int error = 0;
 
@@ -57,7 +57,8 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 			VOP_UNLOCK(dvp, 0);
 		}
 		/* Vget gets the vp for the newly created vnode. Stick it to the virtfs_node too*/
-		error = virtfs_vget(mp, newfid->fid, cnp->cn_lkflags, &vp);
+		//error = virtfs_vget(mp, newfid->fid, cnp->cn_lkflags, &vp);
+		error = 0;
 		if (cnp->cn_flags & ISDOTDOT)
 			vn_lock(dvp, ltype | LK_RETRY);
 	}
@@ -176,6 +177,10 @@ struct p9_wstat {
 
 #endif  
 
+static void dump_inode(struct virtfs_inode *inode)
+{
+	printf("i_mtime:%u ctime:%u uid:%u gid :%u mode:%u\n",inode->i_mtime,inode->i_ctime,inode->i_uid,inode->i_gid,inode->i_mode);
+}
 int
 virtfs_stat_vnode(void *st, struct vnode *vp)
 {
@@ -196,13 +201,15 @@ virtfs_stat_vnode(void *st, struct vnode *vp)
 	}
 	else {
 		struct p9_wstat *stat = (struct p9_wstat *)st;
-		inode->i_mtime = stat->mtime;	
+
+		inode->i_mtime = stat->mtime;
 		inode->i_ctime = stat->atime;
  	        inode->i_uid = stat->n_uid; /* Make sure you copy the numeric */
                 inode->i_gid = stat->n_gid;
 		inode->i_mode = stat->mode;
 
 		memcpy(&np->vqid, &stat->qid, sizeof(stat->qid));
+		dump_inode(inode);
 #if 0
 	uint64_t        i_blocks;
         uint64_t        i_size;

@@ -10,6 +10,7 @@
 #include "../client.h"
 #include "transport.h"
 #include "../protocol.h"
+#include "../9p.h"
 
 int p9_debug_level = 0xFFFF;
 
@@ -41,7 +42,7 @@ p9_parse_opts(struct mount  *mp, struct p9_client *clnt)
 	char *trans;
 	int error = 0;
 
-	clnt->proto_version = p9_proto_2000u; /* Let just do this for now*/
+	clnt->proto_version = p9_proto_2000u; /* Lets just do this for now*/
 	clnt->msize = 8192;
 
     	trans = vfs_getopts(mp->mnt_optnew, "trans", &error);
@@ -67,33 +68,29 @@ static struct p9_buffer *p9_buffer_alloc(int alloc_msize)
 	if (!fc)
 		return NULL;
 	fc->capacity = alloc_msize;
+	fc->offset = 0;
+	fc->size = 0;
 	fc->sdata = (char *) fc + sizeof(struct p9_buffer);
+
 	return fc;
+}
+
+static void
+p9_buffer_free(struct p9_buffer *buf)
+{
+	/* Free the sdata buffers first then the whole strucutre*/
+	free(buf, M_TEMP);
 }
 
 static void p9_free_req(struct p9_req_t *r)
 {
 	/* Creates its own pool later. */
+	if (r->tc)
+		p9_buffer_free(r->tc);
+	if (r->rc)
+		p9_buffer_free(r->rc);
+
 	free(r, M_TEMP);
-}
-
-void p9_client_cb(struct p9_client *c, struct p9_req_t *req)
-{
-	
-	// Finish the request to upper layers.
-	// Copy the information into buffers if needed (FS specific) 
-	// Add the request back into the list.
-//	complete_upper(req); 
-/*
-	bzero(req, sizeof(*req));
-	// add it back to the pool.
-	SLIST_ADD_TAIL(&c->reqlist, req);
-
-	// one new request added, Check if any threads are sleeping for requests.
-	condvar_wakeup(&c->req_cv);
-*/
-	/* Wakeup the req thread which is waitingg for the complete. */
-	wakeup(&req);
 }
 
 static struct p9_req_t *
@@ -110,12 +107,90 @@ struct p9_req_t *p9_get_request(void)
 	if (req == NULL) return NULL;
 	if (!req->tc)
 		req->tc = p9_buffer_alloc(alloc_msize);
-	if (!req->rc)
+	if (!req->rc) {
 		req->rc = p9_buffer_alloc(alloc_msize);
-	
+		printf("receive buffer %p \n",req->rc);	
+	}	
+
 	if (req->tc == NULL || req->rc == NULL) 
 		return NULL;
 	return req;
+}
+
+static void
+dump_pdu(struct p9_buffer *buf)
+{
+	/* Char buffer */
+	int i;
+	char *tbuf = &buf->sdata[0];
+	/* Just dump 30 character of the pdu */
+
+	printf("buf->sdata[0] address %p \n",&tbuf[0]);
+	/*Dump all the first 30 characters */
+	for(i=0;i<30;i++)
+		printf("%hhu ",tbuf[i]);
+}
+
+static int
+p9_parse_receive(struct p9_buffer *buf)
+{
+	int8_t type;
+        int16_t tag;
+        int32_t size;
+        int err;
+
+        buf->offset = 0;
+
+	/* This value is set by QEMU for the header.*/
+        if (buf->size == 0) buf->size = 7;
+
+	dump_pdu(buf);
+
+	/* This is the initial header parse. size, type, and tag .*/
+        err = p9pdu_readf(buf, 0, "dbw", &size, &type, &tag);
+        if (err)
+                goto exit;
+
+        buf->size = size;
+        buf->id = type;
+        buf->tag = tag;
+
+        p9_debug(TRANS, "<<< size=%d type: %d tag: %d\n",
+                 buf->size, buf->id, buf->tag);
+exit:
+        return err;
+}
+
+static int
+p9_client_check_return(struct p9_client *c,
+		       struct p9_req_t *req)
+{
+
+        int err;
+        int ecode;
+
+	dump_pdu(req->tc);
+	/* Check what we have in the receive bufer .*/
+        err = p9_parse_receive(req->rc);
+
+        if (err) {
+                p9_debug(TRANS, "couldn't parse receive buffer %d\n", err);
+                return err;
+        }
+	/* No error , We are done with the preprocessing. Return to the caller
+	 * and process the actual data.
+	 */ 
+        if (req->rc->id != P9PROTO_RERROR)
+                return 0;
+
+	/* TODO: This supports only unix version 9p which is good for now*/
+	/* Find out the actual error .*/
+        err = p9pdu_readf(req->rc, c->proto_version, "d", &ecode);
+        err = -ecode;
+
+        p9_debug(TRANS, "<<< RLERROR (%d)\n", -ecode);
+
+        return err;
 }
 
 static struct p9_req_t *p9_client_prepare_req(struct p9_client *c,
@@ -169,27 +244,27 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 	if (req == NULL)
 		return NULL;
 	/* Call into the transport for submission. */
-	err = c->trans_mod->request(c, req);
 
+	dump_pdu(req->tc);
+	dump_pdu(req->rc);
+
+	err = c->trans_mod->request(c, req);
+	
 	if (err < 0) {
 		if (err == -EIO)
 			c->status = Disconnected;
 		goto reterr;
 	}
-	P9REQMTX_LOCK(c);
-
-	/* Wait for the response */
-	err = msleep(&req, P9REQ_MTX(c),
-		       	PRIBIO, "p9_virtio", 0);
-
-	if (req->status == REQ_STATUS_ERROR) {
-		p9_debug(TRANS, "req_status error %d\n", req->t_err);
-		err = req->t_err;
-	}
-	P9REQMTX_UNLOCK(c);
-
-	if (err < 0)
+	/* Before we return the req (receive buffer and process it) 
+         * we pre process the header to fill in the rc before calling
+	 * into the protocol infra to analyze the data.
+	 */
+	err = p9_client_check_return(c, req);	
+	if (err < 0) {
+		if (err == -EIO)
+			c->status = Disconnected;
 		goto reterr;
+	}
 
 	if (!err)
 		return req;
@@ -203,7 +278,7 @@ reterr:
 /* For every client_walk, start at the root node,and then do
  * a client walk till you find the node you are looking for.
  * similar to a lookup */
-static struct p9_fid *p9_fid_create(struct p9_client *clnt)
+struct p9_fid *p9_fid_create(struct p9_client *clnt)
 {
 	struct p9_fid *fid;
 
@@ -240,7 +315,7 @@ int p9_client_version(struct p9_client *c)
 {
 	int err = 0;
 	struct p9_req_t *req;
-	char version[8];
+	char *version;
 	int msize;
 
 	p9_debug(TRANS, ">>> TVERSION msize %d protocol %d\n",
@@ -273,6 +348,7 @@ int p9_client_version(struct p9_client *c)
 	}
 
 	p9_debug(TRANS, "<<< RVERSION msize %d %s\n", msize, version);
+
 	if (!strncmp(version, "9P2000.L", 8))
 		c->proto_version = p9_proto_2000L;
 	else if (!strncmp(version, "9P2000.u", 8))
@@ -340,7 +416,7 @@ p9_client_create(struct mount *mp)
 	/* For now avoiding any dev_names being passed from the mount */
 	err = clnt->trans_mod->create(clnt);
 	if (err) {
-		err = -ENOENT; // add sometghing here.
+		err = -ENOENT;
 		goto bail_out;
 	}
 
@@ -354,8 +430,6 @@ p9_client_create(struct mount *mp)
 	if (err)
 		goto bail_out;
 
-	/* Init the lock */
-	P9CLNT_INIT(clnt);
 	printf("Client creation success .\n");
 
 	return clnt;
@@ -396,18 +470,40 @@ void p9_client_begin_disconnect(struct p9_client *clnt)
 	clnt->status = BeginDisconnect;
 }
 
+
+/*
+struct p9_fid {
+        struct p9_client *clnt;
+        uint32_t fid;
+        int mode;
+        struct p9_qid qid;
+        uint32_t iounit;
+        uid_t uid;
+        void *rdir;
+}; */
+
+
+static 
+void dump_fid(struct p9_fid *fid)
+{
+	printf("<<<DUMP_FID \n");
+	printf("fid_num :%u %d %d\n",fid->fid,fid->mode,fid->uid);
+}
+
 /* This is called from the mount. This fid which is created for the root inode.
  * the other instances already have the afid .
  */
 struct p9_fid *p9_client_attach(struct p9_client *clnt)
 {
-	/* OK there is big whole here ?  WE have to 
-	 * use err somewher , otherise it doesnt make 
+	/* OK there is big hole here ?  WE have to
+	 * use err somewher , otherise it doesnt make
 	  * much sense .. we should return that from here */
 	int err = 0;
 	struct p9_req_t *req;
 	struct p9_fid *fid = NULL;
 	struct p9_qid qid;
+	char uname[7] ="nobody";
+	char aname[1] = "";
 
 	p9_debug(TRANS, ">>> TATTACH \n");
 	fid = p9_fid_create(clnt);
@@ -416,17 +512,23 @@ struct p9_fid *p9_client_attach(struct p9_client *clnt)
 		fid = NULL;
 		goto error;
 	}
-	fid->uid = 0;
+	fid->uid = -1;
+	dump_fid(fid);
 
-	/* Woah giving access to everyone  ? */
-	/* Get uname from mount and stick it in this function. */ 
-	req = p9_client_request(clnt, P9PROTO_TATTACH, "ddss?u", fid->fid,
-			P9PROTO_NOFID, 0, NULL, 0);
+	printf("Checking 2nd version check..\n"); 
+	req = p9_client_request(clnt, P9PROTO_TVERSION, "ds",
+		clnt->msize, "9P2000.u");
+	
+	/* Get uname from mount and stick it in this function. */
+	req = p9_client_request(clnt, P9PROTO_TATTACH, "ddssd", fid->fid,
+			P9PROTO_NOFID, uname, aname, fid->uid);
+
 	if (req == NULL) {
 		goto error;
 	}
 
 	err = p9pdu_readf(req->rc, clnt->proto_version, "Q", &qid);
+
 	if (err) {
 		p9_free_req(req);
 		goto error;
@@ -603,7 +705,7 @@ int p9_client_close(struct p9_fid *fid)
 
 struct p9_wstat *p9_client_stat(struct p9_fid *fid)
 {
-	int err;
+	int err = 0;
 	struct p9_client *clnt;
 	struct p9_wstat *ret = malloc(sizeof(struct p9_wstat) ,M_TEMP,  M_WAITOK | M_ZERO);
 	struct p9_req_t *req;
@@ -611,7 +713,6 @@ struct p9_wstat *p9_client_stat(struct p9_fid *fid)
 
 	p9_debug(TRANS, ">>> TSTAT fid %d\n", fid->fid);
 
-	err = 0;
 	clnt = fid->clnt;
 
 	req = p9_client_request(clnt, P9PROTO_TSTAT, "d", fid->fid);
@@ -621,7 +722,7 @@ struct p9_wstat *p9_client_stat(struct p9_fid *fid)
 
 	err = p9pdu_readf(req->rc, clnt->proto_version, "wS", &ignored, ret);
 	if (err) {
-		p9_free_req( req);
+		p9_free_req(req);
 		goto error;
 	}
 

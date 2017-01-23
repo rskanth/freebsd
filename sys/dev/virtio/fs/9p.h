@@ -160,6 +160,7 @@ struct p9_qid {
 	uint64_t path;
 };
 
+/* This should be in sync with 9p's V9fsStat */
 struct p9_wstat {
 	uint16_t size;
 	uint16_t type;

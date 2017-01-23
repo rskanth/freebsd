@@ -125,22 +125,39 @@ struct virtfs_session {
    needs some fixing(a wrapper moslty when we need create to work. Ideally
    it should call this, initialize the virtfs_node and create the fids and qids
    for interactions*/
-int virtfs_vget(mp, ino, flags, vpp)
-        struct mount *mp;
-        ino_t ino;
-        int flags;
-        struct vnode **vpp;
+static int virtfs_vget_wrapper
+        (struct mount *mp,
+        struct virtfs_node *p9_node,
+        int flags,
+        struct vnode **vpp)
 {
 	struct virtfs_mount *vmp;
-	struct virtfs_node *p9_node;
 	struct virtfs_session *p9s;
 	struct vnode *vp;
 	struct thread *td;
+	uint32_t ino;
 	struct p9_stat_dotl *st = NULL;
 	struct p9_fid *fid = NULL;
 	int error;
 
 	td = curthread;
+	vmp = VFSTOP9(mp);
+	p9s = &vmp->virtfs_session;
+
+	if (p9_node == NULL)
+	{
+		// Better to call into the client create_fid, to keep the values
+		// consistent.
+		fid = p9_fid_create(p9s->clnt);
+		// the unique number for the file. 
+		ino = fid->fid;
+	}
+	else  /* AGain, we are the root, so we have a ino(fid number aready) */
+	{
+		fid = p9_node->vfid;
+		ino = fid->fid;
+	}
+
 	error = vfs_hash_get(mp, ino, flags, td, vpp, NULL, NULL);
 	if (error || *vpp != NULL)
 		return (error);
@@ -154,7 +171,6 @@ int virtfs_vget(mp, ino, flags, vpp)
 		flags |= LK_EXCLUSIVE;
 	}
 
-	vmp = VFSTOP9(mp);
 
 	/* Allocate a new vnode. */
 	if ((error = getnewvnode("virtfs", mp, &virtfs_vnops, &vp)) != 0) {
@@ -162,14 +178,22 @@ int virtfs_vget(mp, ino, flags, vpp)
 		return (error);
 	}
 
-	p9s = &vmp->virtfs_session;
-	p9_node = malloc(sizeof(struct virtfs_node), M_TEMP,
-	    M_WAITOK | M_ZERO);
-	vp->v_data = p9_node;
-	/* This should be initalized in the caller of this routine */
-	//p9_node->p9n_fid = fid;  /* Nodes fid*/
-	p9_node->v_node = vp; /* map the vnode to ondisk*/
-	p9_node->virtfs_ses = p9s; /* Map the current session */
+
+	/* If we dont have it, create one. */
+	if (p9_node == NULL) {
+		p9_node = malloc(sizeof(struct virtfs_node), M_TEMP,
+	    		M_WAITOK | M_ZERO);
+		vp->v_data = p9_node;
+		/* This should be initalized in the caller of this routine */
+		p9_node->vfid = fid;  /* Nodes fid*/
+		p9_node->v_node = vp; /* map the vnode to ondisk*/
+		p9_node->virtfs_ses = p9s; /* Map the current session */
+	}
+	else { // we are the root, we already have the virtfs_node;
+		vp->v_data = p9_node;
+		/* This should be initalized in the caller of this routine */
+		p9_node->v_node = vp; /* map the vnode to ondisk*/
+	}
 
 	lockmgr(vp->v_vnlock, LK_EXCLUSIVE, NULL);
 	error = insmntque(vp, mp);
@@ -185,14 +209,13 @@ int virtfs_vget(mp, ino, flags, vpp)
 	/* The common code for vfs mount is done. Now we do the 9pfs 
 	 * specifc mount code. */
 
+	/* NOw go get the stats from the host and fill our structures.*/
 	if (virtfs_proto_dotl(p9s)) {
 		st = p9_client_getattr_dotl(fid, P9PROTO_STATS_BASIC);
         	if (st == NULL) {
 			error = -ENOMEM;
 			goto out;
 		}
-		//vp->v_type = st->va_type;
-
 		/* copy back the qid into the p9node also,.*/
 		memcpy(&p9_node->vqid, &st->qid, sizeof(st->qid));
 
@@ -210,7 +233,6 @@ int virtfs_vget(mp, ino, flags, vpp)
                         goto out;
                 }
 
-		//vp->v_type = st->va_type;
 		memcpy(&p9_node->vqid, &st->qid, sizeof(st->qid));
 
 		/* Init the vnode with the disk info*/
@@ -264,7 +286,12 @@ p9_mount(struct mount *mp)
 	root->vfid = fid;
 	root->virtfs_ses = p9s; /*session ptr structure .*/
 
+	/* This is moved to virtfs_root_get as we get the root vnode there
+	 * and is initialized.
+	 */
+	#if 0
 	struct p9_stat_dotl *st = NULL;
+
 
 	/* Create the stat structure to init the vnode */
 	if (virtfs_proto_dotl(p9s)) {
@@ -272,7 +299,7 @@ p9_mount(struct mount *mp)
         	if (st == NULL) {
 			error = -ENOMEM;
 			goto out;
-		}
+	}
 		memcpy(&root->vqid, &st->qid, sizeof(st->qid));
 		/* Init the vnode with the disk info*/
                 virtfs_stat_vnode(st, root->v_node);
@@ -290,6 +317,7 @@ p9_mount(struct mount *mp)
                 virtfs_stat_vnode(st, root->v_node);
                 free(st, M_TEMP);
 	}
+	#endif
 
 	mp->mnt_stat.f_fsid.val[1] = mp->mnt_vfc->vfc_typenum;
 	mp->mnt_maxsymlinklen = 0;
@@ -301,19 +329,12 @@ p9_mount(struct mount *mp)
 	/* Mount structures created. */
 
 	return 0;
-out:
-	#if 0
-	if (cp != NULL) {
-		g_topology_lock();
-		g_vfs_close(cp);
-		g_topology_unlock();
-	}
-	#endif
-	if (vmp) {
+//out:
+/*	if (vmp) {
 		free(vmp, M_TEMP);
 		mp->mnt_data = NULL;
 	}
-	//dev_rel(dev);
+*/
 	return error;
 }
 
@@ -433,16 +454,20 @@ virtfs_mount(struct mount *mp)
 
 /* This one only makes the root_vnode. We already have the virtfs_node for this 
 vnode. */
-static int virtfs_make_root(struct mount *mp, struct vnode *vp)
+
+#if 0
+static int virtfs_vget(struct mount *mp, struct vnode *vp)
 {
 	int error = 0;
+	
 	/* Allocate a new vnode. */
-	if ((error = getnewvnode("virtfs", mp, &virtfs_vnops, &vp)) != 0) {
+	if ((error = virtfs_vget(mp, &vp)) != 0) {
 		vp = NULLVP;
 		return (error);
 	}
 	return 0;
 }
+#endif
 
 static int
 virtfs_root(struct mount *mp, int lkflags, struct vnode **vpp)
@@ -450,18 +475,22 @@ virtfs_root(struct mount *mp, int lkflags, struct vnode **vpp)
 	struct virtfs_mount *vmp = VFSTOP9(mp);
 	struct virtfs_node *np = &vmp->virtfs_session.rnp;
 	int error = 0;
-	printf("abput to make virtfs_make_root ..\n");
+	printf(" make virtfs_make_root ..\n");
 
-	if ((error = virtfs_make_root(mp, *vpp))) {
+	/* fid is the number (unique ) ino for this file. Here it is 
+	 * the root number
+	 * vpp is initalized. If we are the root, we can get other stuff
+	 */
+	if ((error = virtfs_vget_wrapper(mp, np, lkflags, vpp))) {
+
 		*vpp = NULLVP;
 		return error;
 	}
 	np->v_node = *vpp;
 	printf("Successfully initialized root vnode ..\n");
 	vref(*vpp);
-	vn_lock(*vpp, lkflags);
 
-	return (0);
+	return (error);
 }
 
 static int
@@ -489,7 +518,7 @@ struct vfsops virtfs_vfsops = {
 	.vfs_statfs =	virtfs_statfs,
 	.vfs_fhtovp =	virtfs_fhtovp,
 	.vfs_sync =	virtfs_sync,
-	.vfs_vget =     virtfs_vget,      /* Most imp vnode_get function.*/
+	.vfs_vget = NULL, //    virtfs_vget,      /* Most imp vnode_get function.*/
 };
 VFS_SET(virtfs_vfsops, virtfs, VFCF_JAIL);
 MODULE_VERSION(vtfs, 1);
