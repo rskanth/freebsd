@@ -125,10 +125,11 @@ struct virtfs_session {
    needs some fixing(a wrapper moslty when we need create to work. Ideally
    it should call this, initialize the virtfs_node and create the fids and qids
    for interactions*/
-static int virtfs_vget_wrapper
+int virtfs_vget_wrapper
         (struct mount *mp,
         struct virtfs_node *p9_node,
         int flags,
+	struct p9_fid *fid,
         struct vnode **vpp)
 {
 	struct virtfs_mount *vmp;
@@ -137,30 +138,22 @@ static int virtfs_vget_wrapper
 	struct thread *td;
 	uint32_t ino;
 	struct p9_stat_dotl *st = NULL;
-	struct p9_fid *fid = NULL;
 	int error;
 
 	td = curthread;
 	vmp = VFSTOP9(mp);
 	p9s = &vmp->virtfs_session;
 
-	if (p9_node == NULL)
-	{
-		// Better to call into the client create_fid, to keep the values
-		// consistent.
-		fid = p9_fid_create(p9s->clnt);
-		// the unique number for the file. 
-		ino = fid->fid;
-	}
-	else  /* AGain, we are the root, so we have a ino(fid number aready) */
-	{
-		fid = p9_node->vfid;
-		ino = fid->fid;
-	}
+	/* This should either be a root one or the walk on(which should have cloned)*/
+	ino = fid->fid;
 
 	error = vfs_hash_get(mp, ino, flags, td, vpp, NULL, NULL);
 	if (error || *vpp != NULL)
+	{
+		printf("found the node proceed %p\n",*vpp);
 		return (error);
+	}
+	printf("WE havent found the node .. GO ahead to create one ..\n");
 
 	/*
 	 * We must promote to an exclusive lock for vnode creation.  This
@@ -170,7 +163,6 @@ static int virtfs_vget_wrapper
 		flags &= ~LK_TYPE_MASK;
 		flags |= LK_EXCLUSIVE;
 	}
-
 
 	/* Allocate a new vnode. */
 	if ((error = getnewvnode("virtfs", mp, &virtfs_vnops, &vp)) != 0) {
@@ -193,6 +185,8 @@ static int virtfs_vget_wrapper
 		vp->v_data = p9_node;
 		/* This should be initalized in the caller of this routine */
 		p9_node->v_node = vp; /* map the vnode to ondisk*/
+		vp->v_type = VDIR; /* root vp is a directory */
+		vp->v_vflag |= VV_ROOT;
 	}
 
 	lockmgr(vp->v_vnlock, LK_EXCLUSIVE, NULL);
@@ -220,7 +214,7 @@ static int virtfs_vget_wrapper
 		memcpy(&p9_node->vqid, &st->qid, sizeof(st->qid));
 
 		/* Init the vnode with the disk info*/
-                virtfs_stat_vnode(st, vp);
+                virtfs_stat_vnode_l();
 		/* There needs to be quite a few changes to M_TEMPS to have
 		pools for each structure */
                 free(st, M_TEMP);
@@ -236,7 +230,7 @@ static int virtfs_vget_wrapper
 		memcpy(&p9_node->vqid, &st->qid, sizeof(st->qid));
 
 		/* Init the vnode with the disk info*/
-                virtfs_stat_vnode(st, vp);
+                virtfs_stat_vnode_u(st, vp);
                 free(st, M_TEMP);
 	}
 
@@ -388,7 +382,7 @@ virtfs_mount(struct mount *mp)
 	struct nameidata ndp;
 	#endif
 
-	/* No support for UPDATe for now */
+	/* No support for UPDATE for now */
 	if (mp->mnt_flag & MNT_UPDATE)
 		return EOPNOTSUPP;
 
@@ -475,19 +469,18 @@ virtfs_root(struct mount *mp, int lkflags, struct vnode **vpp)
 	struct virtfs_mount *vmp = VFSTOP9(mp);
 	struct virtfs_node *np = &vmp->virtfs_session.rnp;
 	int error = 0;
-	printf(" make virtfs_make_root ..\n");
 
 	/* fid is the number (unique ) ino for this file. Here it is 
 	 * the root number
 	 * vpp is initalized. If we are the root, we can get other stuff
 	 */
-	if ((error = virtfs_vget_wrapper(mp, np, lkflags, vpp))) {
+	if ((error = virtfs_vget_wrapper(mp, np, lkflags, np->vfid, vpp))) {
 
 		*vpp = NULLVP;
 		return error;
 	}
 	np->v_node = *vpp;
-	printf("Successfully initialized root vnode ..\n");
+	printf("Successfully initialized root vnode .%p.\n",*vpp);
 	vref(*vpp);
 
 	return (error);

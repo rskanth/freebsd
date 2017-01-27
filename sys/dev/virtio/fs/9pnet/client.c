@@ -515,10 +515,6 @@ struct p9_fid *p9_client_attach(struct p9_client *clnt)
 	fid->uid = -1;
 	dump_fid(fid);
 
-	printf("Checking 2nd version check..\n"); 
-	req = p9_client_request(clnt, P9PROTO_TVERSION, "ds",
-		clnt->msize, "9P2000.u");
-	
 	/* Get uname from mount and stick it in this function. */
 	req = p9_client_request(clnt, P9PROTO_TATTACH, "ddssd", fid->fid,
 			P9PROTO_NOFID, uname, aname, fid->uid);
@@ -576,7 +572,45 @@ error:
 	return err;
 }
 
-/* This is the key function. Make sure this has everything correct .*/
+/* When an extra fid has been created on the qemu and we found errors, we are going
+ * to clunk the fid again and free the fid to return ENOENT (ex from lookup to reflect
+ * that
+ */
+static int 
+p9_client_clunk(struct p9_fid *fid)
+{
+        int err;
+        struct p9_client *clnt;
+        struct p9_req_t *req;
+
+        if (!fid) {
+                p9_debug(TRANS, "clunk with NULL fid is bad\n");
+                return 0;
+        }
+
+        p9_debug(TRANS, ">>> TCLUNK fid %d \n", fid->fid);
+
+        err = 0;
+        clnt = fid->clnt;
+
+        req = p9_client_request(clnt, P9PROTO_TCLUNK, "d", fid->fid);
+        if (req == NULL) {
+                err = -ENOMEM;
+                goto error;
+        }
+
+        p9_debug(TRANS, "<<< RCLUNK fid %d\n", fid->fid);
+
+        p9_free_req(req);
+error:
+        p9_fid_destroy(fid);
+
+        return err;
+}
+
+/* oldfid is the fid of the directory. We need to search the component name
+ * present in wnames 
+ */
 struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 		char **wnames, int clone)
 {
@@ -605,6 +639,9 @@ struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 	p9_debug(TRANS, ">>> TWALK fids %d,%d nwname %ud wname[0] %s\n",
 		 oldfid->fid, fid->fid, nwname, wnames ? wnames[0] : NULL);
 
+	/* the newfid is for the component in search. We are preallocating as qemu
+	 * on the other side allocates or returns a fid if it sees a match
+	 */
 	req = p9_client_request(clnt, P9PROTO_TWALK, "ddT", oldfid->fid, fid->fid,
 								nwname, wnames);
 	if (req == NULL) {
@@ -642,7 +679,7 @@ struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 
 clunk_fid:
 	free(wqids, M_TEMP);
-	p9_client_close(fid);
+	p9_client_clunk(fid);
 	fid = NULL;
 
 error:
@@ -734,6 +771,57 @@ error:
 	return NULL;
 }
 
+static int p9_client_statsize(struct p9_wstat *wst, int proto_version)
+{
+	int ret;
+
+	/* NOTE: size shouldn't include its own length */
+	/* size[2] type[2] dev[4] qid[13] */
+	/* mode[4] atime[4] mtime[4] length[8]*/
+	/* name[s] uid[s] gid[s] muid[s] */
+	ret = 2+4+13+4+4+4+8+2+2+2+2;
+
+	if (wst->name)
+		ret += strlen(wst->name);
+	if (wst->uid)
+		ret += strlen(wst->uid);
+	if (wst->gid)
+		ret += strlen(wst->gid);
+	if (wst->muid)
+		ret += strlen(wst->muid);
+
+	if ((proto_version == p9_proto_2000u) ||
+		(proto_version == p9_proto_2000L)) {
+		ret += 2+4+4+4;	/* extension[s] n_uid[4] n_gid[4] n_muid[4] */
+		if (wst->extension)
+			ret += strlen(wst->extension);
+	}
+
+	return ret;
+}
+
+int p9_client_wstat(struct p9_fid *fid, struct p9_wstat *wst)
+{
+	int err;
+	struct p9_req_t *req;
+	struct p9_client *clnt;
+
+	err = 0;
+	clnt = fid->clnt;
+	wst->size = p9_client_statsize(wst, clnt->proto_version);
+
+	req = p9_client_request(clnt, P9PROTO_TWSTAT, "dwS", fid->fid, wst->size+2, wst);
+	if (req == NULL) {
+		err = -ENOMEM;
+		goto error;
+	}
+
+	p9_free_req(req);
+error:
+	return err;
+}
+
+
 /* This gets the disk info from the host for the fid mentioned. */
 struct p9_stat_dotl *p9_client_getattr_dotl(struct p9_fid *fid,
 							uint64_t request_mask)
@@ -787,56 +875,6 @@ struct p9_stat_dotl *p9_client_getattr_dotl(struct p9_fid *fid,
 error:
 	free(ret, M_TEMP);
 	return NULL;
-}
-
-static int p9_client_statsize(struct p9_wstat *wst, int proto_version)
-{
-	int ret;
-
-	/* NOTE: size shouldn't include its own length */
-	/* size[2] type[2] dev[4] qid[13] */
-	/* mode[4] atime[4] mtime[4] length[8]*/
-	/* name[s] uid[s] gid[s] muid[s] */
-	ret = 2+4+13+4+4+4+8+2+2+2+2;
-
-	if (wst->name)
-		ret += strlen(wst->name);
-	if (wst->uid)
-		ret += strlen(wst->uid);
-	if (wst->gid)
-		ret += strlen(wst->gid);
-	if (wst->muid)
-		ret += strlen(wst->muid);
-
-	if ((proto_version == p9_proto_2000u) ||
-		(proto_version == p9_proto_2000L)) {
-		ret += 2+4+4+4;	/* extension[s] n_uid[4] n_gid[4] n_muid[4] */
-		if (wst->extension)
-			ret += strlen(wst->extension);
-	}
-
-	return ret;
-}
-
-int p9_client_wstat(struct p9_fid *fid, struct p9_wstat *wst)
-{
-	int err;
-	struct p9_req_t *req;
-	struct p9_client *clnt;
-
-	err = 0;
-	clnt = fid->clnt;
-	wst->size = p9_client_statsize(wst, clnt->proto_version);
-
-	req = p9_client_request(clnt, P9PROTO_TWSTAT, "dwS", fid->fid, wst->size+2, wst);
-	if (req == NULL) {
-		err = -ENOMEM;
-		goto error;
-	}
-
-	p9_free_req(req);
-error:
-	return err;
 }
 
 int p9_client_setattr(struct p9_fid *fid, struct p9_iattr_dotl *p9attr)
@@ -908,10 +946,11 @@ error:
 /* Only support for readdir for now .*/ 
 int p9_client_readdir(struct p9_fid *fid, char *data, uint32_t count, uint64_t offset)
 {
-	int err, rsize;
+	int err;
 	struct p9_client *clnt;
 	struct p9_req_t *req = NULL;
 	char *dataptr;
+	int size;
 
 	p9_debug(TRANS, ">>> TREADDIR fid %d offset %llu count %d\n",
 				fid->fid, (unsigned long long) offset, count);
@@ -919,15 +958,10 @@ int p9_client_readdir(struct p9_fid *fid, char *data, uint32_t count, uint64_t o
 	err = 0;
 	clnt = fid->clnt;
 
-	rsize = fid->iounit;
-	if (!rsize || rsize > clnt->msize)
-		rsize = clnt->msize;
-
-	if (count < rsize)
-		rsize = count;
+	size = clnt->msize;
 
 	req = p9_client_request(clnt, P9PROTO_TREADDIR, "dqd", fid->fid,
-			    offset, rsize);
+			    offset, size);
 	if (req == NULL) {
 		err = -ENOMEM;
 		goto error;

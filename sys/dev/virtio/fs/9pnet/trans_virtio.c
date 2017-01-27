@@ -12,19 +12,21 @@
 #include <sys/sglist.h>
 #include <sys/queue.h>
 #include <sys/bus.h>
+#include <sys/kthread.h>
 #include <machine/bus.h>
 
-#include "dev/virtio/virtio.h"
-#include "dev/virtio/virtqueue.h"
-
+#include <dev/virtio/virtio.h>
+#include <dev/virtio/virtqueue.h>
+#include <dev/virtio/virtio_ring.h>
 #include <sys/condvar.h>
 
 #define VIRTQUEUE_NUM	128
 #define VT9P_MTX(_sc) &(_sc)->vt9p_mtx
 #define VT9P_LOCK(_sc) mtx_lock(VT9P_MTX(_sc))
 #define VT9P_UNLOCK(_sc) mtx_unlock(VT9P_MTX(_sc))
-#define VT9P_INIT(_sc) mtx_init(VT9P_MTX(_sc), "chan_lock", NULL, MTX_DEF);
+#define VT9P_LOCK_INIT(_sc) mtx_init(VT9P_MTX(_sc), "VIRTIO 9P CHAN lock", NULL, MTX_DEF)
 //#define VT9P_INIT(mtx)
+struct virtqueue;
 
 /* a single mutex to manage channel initialization and attachment */
 //struct mtx virtio_9p_lock;
@@ -67,25 +69,83 @@ static int vt9p_cancel(struct p9_client *client, struct p9_req_t *req)
 	return 1;
 }
 
+
+# if 0
+ device_t                 vq_dev;
+58        char                     vq_name[VIRTQUEUE_MAX_NAME_SZ];
+59        uint16_t                 vq_queue_index;
+60        uint16_t                 vq_nentries;
+61        uint32_t                 vq_flags;
+62#define VIRTQUEUE_FLAG_INDIRECT  0x0001
+63#define VIRTQUEUE_FLAG_EVENT_IDX 0x0002
+64
+65        int                      vq_alignment;
+66        int                      vq_ring_size;
+67        void                    *vq_ring_mem;
+68        int                      vq_max_indirect_size;
+69        int                      vq_indirect_mem_size;
+70        virtqueue_intr_t        *vq_intrhand;
+71        void                    *vq_intrhand_arg;
+72
+73        struct vring             vq_ring;
+74        uint16_t                 vq_free_cnt;
+75        uint16_t                 vq_queued_cnt;
+76   
+    */
+81        uint16_t                 vq_desc_head_idx;
+82        /*
+83         * Last consumed descriptor in the used table,
+84         * trails vq_ring.used->idx.
+85         */
+86        uint16_t                 vq_used_cons_idx;
+87
+#endif 
+
 static int
 vt9p_request(struct p9_client *client, struct p9_req_t *req)
 {
-	int err, out, in;
+	int err;
 	struct vt9p_softc *chan = client->trans;
+	void *c = NULL;
+	int readable = 0, writable = 0;
+	struct sglist *sg;
+	struct virtqueue *vq;
+
+	sg = chan->vt9p_sglist;
+	vq = chan->vt9p_vq;
 
 	p9_debug(TRANS, "9p debug: virtio request\n");
 
-	req->status = REQ_STATUS_SENT;
-req_retry:
+
+	/* Grab the channel lock*/
 	VT9P_LOCK(chan);
+	req->status = REQ_STATUS_SENT;
 
+	sglist_reset(sg);
 	/* Handle out VirtIO ring buffers */
-	out = sglist_append(chan->vt9p_sglist, req->tc->sdata, req->tc->size);
+	err = sglist_append(sg, req->tc->sdata, req->tc->size);
+	if (err < 0) {
+		printf("Something wrong with sglist append ..\n");	
+		return err;
+	}
+	//Number of nseg for sglist.
+	readable = sg->sg_nseg;
+	printf("readable :%d \n",readable);
 
-	in = sglist_append(chan->vt9p_sglist, req->rc->sdata, req->rc->capacity);
+	err = sglist_append(sg, req->rc->sdata, req->rc->capacity);
+	if (err < 0) {
+		printf("Something wrong with sglist append ..\n");	
+		return err;
+	}
+	writable = sg->sg_nseg - readable;
+	printf("writable :%d \n",writable);
+	
+	virtqueue_dump(vq);
+req_retry:
+	err = virtqueue_enqueue(vq, req, sg, readable, writable);
 
-	err = virtqueue_enqueue(chan->vt9p_vq, req, chan->vt9p_sglist, in, out);
-
+	virtqueue_dump(vq);
+        chan->ring_bufs_avail--;
 	/* Retry mechanism for the requeue. We could either
 	 * do it this way - Where we sleep in this context and
 	 * wakeup again when we have resources or create a new
@@ -93,37 +153,48 @@ req_retry:
 	if (err < 0) {
 		if (err == -ENOSPC) {
 			chan->ring_bufs_avail = 0;
-			VT9P_UNLOCK(chan);
-			/* Condvar for the submit queue.*/
+			/* Condvar for the submit queue. Can we still hold chan lock ?*/
 			cv_wait(&chan->submit_cv, &chan->submit_cv_lock);
 			p9_debug(TRANS, "Retry virtio request\n");
 			goto req_retry;
 		} else {
-			VT9P_UNLOCK(chan);
 			p9_debug(TRANS,
 				 "virtio rpc add_sgs returned failure\n");
 			return -EIO;
 		}
 	}
 
-        chan->ring_bufs_avail--;
+	printf("Notified ..\n");
+	/* We have to notify */
+	virtqueue_notify(vq);
+	while((c = virtqueue_dequeue(vq, NULL)) == NULL)
+	 	msleep(chan, VT9P_MTX(chan), 0, "chan lock", 0);
         VT9P_UNLOCK(chan);
 
+	virtqueue_dump(vq);
 	p9_debug(TRANS, "virtio request kicked\n");
-	/* We return back to the client and wait there for the submission. */
 	return 0;
 }
 
+#if 0
+  if (vq->vq_flags & VIRTQUEUE_FLAG_EVENT_IDX)
+                vring_used_event(&vq->vq_ring) = vq->vq_used_cons_idx + ndesc;
+        else
+                vq->vq_ring.avail->flags &= ~VRING_AVAIL_F_NO_INTERRUPT;
+
+        mb();
+#endif
+#define VIRTQUEUE_FLAG_EVENT_IDX 0x0002
+#define VRING_AVAIL_F_NO_INTERRUPT 1
 /* Completion of the request from the virt queue. */
 static void
 vt9p_intr_complete(void *xsc)
 {
-	struct vt9p_softc *chan;
+	#if 0
 	struct virtqueue *vq;
 	struct p9_req_t *req;
 	//struct req_queue queue;
 	printf("intr handler has to hit.. \n");
-	chan = (struct vt9p_softc *)xsc;
 	vq = chan->vt9p_vq;
 
         /* Ideally we should be running the loop and copying
@@ -137,11 +208,34 @@ vt9p_intr_complete(void *xsc)
 			break;
 		} */
 	//}
-	chan->ring_bufs_avail++;
  	VT9P_UNLOCK(chan);
 	/* Wakeup if anyone waiting for VirtIO ring space. */
 	cv_signal(&chan->submit_cv);
 	p9_client_cb(chan->client, req);
+	#endif
+	struct vt9p_softc *chan;
+	chan = (struct vt9p_softc *)xsc;
+	struct virtqueue *vq = chan->vt9p_vq;
+
+	printf("completing the interrupt ..\n");
+
+        VT9P_LOCK(chan);
+	chan->ring_bufs_avail++;
+	// dont forget to enable intr.
+	// SOmething is messed up here.. come back and fix this.
+	/// for now i am just clearing the bit.
+	//dirty hack for now.
+	//vq->vq_flags &= ~VIRTQUEUE_FLAG_EVENT_IDX;
+	if (virtqueue_enable_intr(vq) != 0) {
+		//virtqueue_disable_intr(vq);
+		printf("intere:");
+	}
+
+	// Set it back
+	//vq->vq_flags |= VIRTQUEUE_FLAG_EVENT_IDX;
+
+        wakeup(chan);
+        VT9P_UNLOCK(chan);
 }
 
 
@@ -162,7 +256,7 @@ gain:
 }
 #endif 
 
-static int virtio_alloc_queue(struct vt9p_softc *sc)
+static int vt9p_alloc_virtqueue(struct vt9p_softc *sc)
 {
     struct vq_alloc_info vq_info;
     device_t dev = sc->vt9p_dev;
@@ -195,24 +289,18 @@ static int vt9p_attach(device_t dev)
 	chan = device_get_softc(dev);
 	chan->vt9p_dev = dev;
 
-	/* We expect one virtqueue, for requests. */
-	err = virtio_alloc_queue(chan);
-
-	if (err < 0) {
-		goto out_p9_free_vq;
-	}
-
-	VT9P_INIT(chan);
+	/* Init the channel lock. */
+	VT9P_LOCK_INIT(chan);
 	/* this lock is for the chan selection in create
 	 * that is still not functional now but just init the lock */
 	//VT9P_INIT(virtio_9p_lock);
 
 	/* Ideally we would want to calculate the number of segements
 	 * from the configuration but for now, Well just make it 
-	 * 3segs. Refer to virtio_block for this number.
+	 * 20segs. Refer to virtio_block for this number.
 	 */
-	chan->max_nsegs = 3;
-	chan->vt9p_sglist = sglist_alloc(VIRTQUEUE_NUM, M_NOWAIT);
+	chan->max_nsegs = 20;
+	chan->vt9p_sglist = sglist_alloc(chan->max_nsegs, M_NOWAIT);
 
 	if (chan->vt9p_sglist == NULL) {
 		err = ENOMEM;
@@ -246,12 +334,27 @@ static int vt9p_attach(device_t dev)
 	//SLIST_INSERT_TAIL(&chan->chan_list, &vt9p_softc_list);
 	//mtx_unlock(&virtio_9p_lock);
 
-	err = virtio_setup_intr(dev, INTR_TYPE_BIO|INTR_MPSAFE);
+	/* We expect one virtqueue, for requests. */
+	err = vt9p_alloc_virtqueue(chan);
+
+	if (err < 0) {
+		printf("allocating the virtqueue failed ..\n");
+		goto out_p9_free_vq;
+	}
+
+	err = virtio_setup_intr(dev, INTR_TYPE_MISC|INTR_MPSAFE);
 	if (err) {
 		printf("cannot setup virtqueue interrupt\n");
 		goto out_p9_free_vq;
 	}
-	virtqueue_enable_intr(chan->vt9p_vq);
+	err = virtqueue_enable_intr(chan->vt9p_vq);
+	
+	if (err) {
+		printf("cannot enable virtqueue interrupt\n");
+		goto out_p9_free_vq;
+	}
+	
+	printf("enabling intr %d\n",err);
 	global_ctx = chan;
 	printf("Attach successfully \n"); 
 	return 0;

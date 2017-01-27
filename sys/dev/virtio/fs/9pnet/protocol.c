@@ -12,16 +12,16 @@
 #include "../client.h"
 #include "../protocol.h"
 
-#define cpu_to_le16(x) htons(x)
-#define cpu_to_le32(x) htonl(x)
-#define cpu_to_le64(x) (x)
-#define le16_to_cpu(x) ntohs(x)
-#define le32_to_cpu(x) ntohl(x)
-#define le64_to_cpu(x) (x)
-
 static int
 p9pdu_writef(struct p9_buffer *pdu, int proto_version, const char *fmt, ...);
 void p9stat_p9_free(struct p9_wstat *stbuf);
+
+/*static void dump_pdu(struct p9_buffer *pdu)
+{
+	printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
+	printf("strng%s",&pdu->sdata[0]);
+	printf("\n");
+}*/
 
 void p9stat_p9_free(struct p9_wstat *stbuf)
 {
@@ -35,6 +35,8 @@ void p9stat_p9_free(struct p9_wstat *stbuf)
 size_t pdu_read(struct p9_buffer *pdu, void *data, size_t size)
 {
 	size_t len = min(pdu->size - pdu->offset, size);
+	printf("%d %d %d %d sdata %p \n", len, pdu->offset,size,pdu->size ,&pdu->sdata[0]);
+	printf("data in the pdu :%hhu %hhu %hhu %hhu \n",pdu->sdata[0],pdu->sdata[1],pdu->sdata[2],pdu->sdata[3]);
 	memcpy(data, &pdu->sdata[pdu->offset], len);
 	pdu->offset += len;
 	return size - len;
@@ -90,17 +92,20 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 					errcode = -EFAULT;
 					break;
 				}
-				*val = le16_to_cpu(le_val);
+				*val = le_val;
 			}
 			break;
 		case 'd':{
 				int32_t *val = va_arg(ap, int32_t *);
 				int32_t le_val;
 				if (pdu_read(pdu, &le_val, sizeof(le_val))) {
+					printf("DId this break \n");
 					errcode = -EFAULT;
 					break;
 				}
-				*val = le32_to_cpu(le_val);
+				*val = le_val;
+				printf("After sending :%d %d\n",*val,le_val);
+		
 			}
 			break;
 		case 'q':{
@@ -110,7 +115,7 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 					errcode = -EFAULT;
 					break;
 				}
-				*val = le64_to_cpu(le_val);
+				*val = le_val;
 			}
 			break;
 		case 's':{
@@ -119,11 +124,14 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 
 				errcode = p9pdu_readf(pdu, proto_version,
 								"w", &len);
+				printf("len should be :%hu \n",len);
+
 				if (errcode)
 					break;
 
 				*sptr = malloc(len + 1, M_TEMP, M_NOWAIT);
 				if (*sptr == NULL) {
+					printf("code break at EFAULT ..\n");
 					errcode = -EFAULT;
 					break;
 				}
@@ -142,6 +150,7 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				errcode = p9pdu_readf(pdu, proto_version, "bdq",
 						      &qid->type, &qid->version,
 						      &qid->path);
+				printf("done with legit Q read ..\n");
 			}
 			break;
 		case 'S':{
@@ -154,7 +163,7 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 
 				errcode =
 				    p9pdu_readf(pdu, proto_version,
-						"wwdQdddqssss?sugu",
+						"wwdQdddqssss?sddd",
 						&stbuf->size, &stbuf->type,
 						&stbuf->dev, &stbuf->qid,
 						&stbuf->mode, &stbuf->atime,
@@ -312,22 +321,31 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				int8_t val = va_arg(ap, int);
 				if (pdu_write(pdu, &val, sizeof(val)))
 					errcode = -EFAULT;
+				printf("DId b %u \n",val);
+				printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
+				printf("bit mapint values%hhu \n",pdu->sdata[4]);
+	
 			}
 			break;
 		case 'w':{
-				int16_t val = cpu_to_le16(va_arg(ap, int));
+				int16_t val = va_arg(ap, int);
 				if (pdu_write(pdu, &val, sizeof(val)))
 					errcode = -EFAULT;
 			}
 			break;
 		case 'd':{
-				int32_t val = cpu_to_le32(va_arg(ap, int32_t));
+				int32_t val = va_arg(ap, int32_t);
+				printf("before conversion :%d %d\n",val,pdu->size);
 				if (pdu_write(pdu, &val, sizeof(val)))
 					errcode = -EFAULT;
+					printf("DId  %d\n",val);
+					printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
+					printf("int values%d %d \n",pdu->sdata[0],pdu->sdata[5]);
+				
 			}
 			break;
 		case 'q':{
-				int64_t val = cpu_to_le64(va_arg(ap, int64_t));
+				int64_t val = va_arg(ap, int64_t);
 				if (pdu_write(pdu, &val, sizeof(val)))
 					errcode = -EFAULT;
 			}
@@ -340,8 +358,13 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 
 				errcode = p9pdu_writef(pdu, proto_version,
 								"w", len);
+				printf("DId %s \n",sptr);
+				printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
+
 				if (!errcode && pdu_write(pdu, sptr, len))
 					errcode = -EFAULT;
+
+				printf("strng %hhu %hhu %s  \n",pdu->sdata[9],pdu->sdata[10],&pdu->sdata[11]);
 			}
 			break;
 		case 'Q':{
@@ -357,7 +380,7 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				    va_arg(ap, const struct p9_wstat *);
 				errcode =
 				    p9pdu_writef(pdu, proto_version,
-						 "wwdQdddqssss?sugu",
+						 "wwdQdddqssss?sddd",
 						 stbuf->size, stbuf->type,
 						 stbuf->dev, &stbuf->qid,
 						 stbuf->mode, stbuf->atime,
@@ -488,8 +511,11 @@ int p9stat_read(struct p9_client *clnt, char *buf, size_t len, struct p9_wstat *
 
 int p9pdu_prepare(struct p9_buffer *pdu, int8_t type)
 {
+	int tag = 0;
 	pdu->id = type;
-	return p9pdu_writef(pdu, 0, "dbw", 0, type);
+	printf("p9pdu_prepare ID%d \n",pdu->id);
+
+	return p9pdu_writef(pdu, 0, "dbw", 0, type, tag);
 }
 
 int p9pdu_finalize(struct p9_client *clnt, struct p9_buffer *pdu)
@@ -516,19 +542,21 @@ void p9pdu_reset(struct p9_buffer *pdu)
 /* Directory entry read with the buf we have. Call this once we have the 
  * buf to parse .*/
 int p9dirent_read(struct p9_client *clnt, char *buf, int len,
-		  struct p9_dirent *dirent)
+		  struct dirent *dirent)
 {
 	struct p9_buffer fake_pdu;
 	int ret;
 	char *nameptr;
+	struct p9_qid qid; // Not used yet
+	uint64_t d_off; // NOt used yet/
 
 	fake_pdu.size = len;
 	fake_pdu.capacity = len;
 	fake_pdu.sdata = buf;
 	fake_pdu.offset = 0;
 
-	ret = p9pdu_readf(&fake_pdu, clnt->proto_version, "Qqbs", &dirent->qid,
-			  &dirent->d_off, &dirent->d_type, &nameptr);
+	ret = p9pdu_readf(&fake_pdu, clnt->proto_version, "Qqbs", &qid,
+			  &d_off, &dirent->d_type, &nameptr);
 	if (ret) {
 		p9_debug(PROTO, "<<< p9dirent_read failed: %d\n", ret);
 		goto out;
@@ -538,5 +566,6 @@ int p9dirent_read(struct p9_client *clnt, char *buf, int len,
 	free(nameptr, M_TEMP);
 
 out:
+	printf("fake_pdu.offset :%d\n",fake_pdu.offset);
 	return fake_pdu.offset;
 }

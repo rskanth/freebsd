@@ -13,19 +13,26 @@ struct virtfs_session;
 
 /* The in memory representation of the on disk inode. Save the current 
  * fields to write it back later. */
-
+/* This is the exact same as stat.*/
 struct virtfs_inode {
 
 	/* Make it simple first, Add more fields later */
-        uint64_t        i_blocks;
-        uint64_t        i_size;
-        uint64_t        i_ctime;
-        uint64_t        i_mtime;
-        uint32_t        i_uid;
-        uint32_t        i_gid;
-        uint16_t        i_mode;
-        uint32_t        i_flags;
-};
+	uint16_t i_size;
+        uint16_t i_type;
+        uint32_t i_dev;
+        uint32_t i_mode; 
+        uint32_t i_atime;
+        uint32_t i_mtime;
+        uint64_t i_length;
+        char *i_name;
+        char *i_uid;
+        char *i_gid;
+        char *i_muid;
+        char *i_extension;        /* 9p2000.u extensions */
+        uid_t n_uid;            /* 9p2000.u extensions */
+        gid_t n_gid;            /* 9p2000.u extensions */
+        uid_t n_muid;           /* 9p2000.u extensions */
+};               
 
 /* A Plan9 node. */
 struct virtfs_node {
@@ -37,6 +44,9 @@ struct virtfs_node {
 	struct virtfs_inode inode; /* This represents the ondisk in mem inode */
 	struct virtfs_session *virtfs_ses; /*  Session_ptr for this node */
 };
+
+
+#define VTON(vp) vp->v_data
 
 #define	MAXUNAMELEN	32
 
@@ -69,10 +79,17 @@ enum virt_session_flags {
 /* These are all the VIRTFS specific vops */
 //int virtfs_open(struct p9_client *clnt, int mode);
 //int virtfs_close(struct p9_client *clnt);
-int virtfs_stat_vnode(void *st, struct vnode *vp);
+int virtfs_stat_vnode_l(void);
+int virtfs_stat_vnode_u(struct p9_wstat *st, struct vnode *vp);
 int virtfs_proto_dotl(struct virtfs_session *virtfss);
 struct p9_fid *virtfs_init_session(struct mount *mp);
 void virtfs_close_session(struct mount *mp);
 int virtfs_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp);
+int virtfs_vget_wrapper
+        (struct mount *mp,
+        struct virtfs_node *p9_node,
+        int flags,
+	struct p9_fid *fid,
+        struct vnode **vpp);
 
 #endif /* __VIRTFS__ */
