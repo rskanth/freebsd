@@ -35,8 +35,8 @@ void p9stat_p9_free(struct p9_wstat *stbuf)
 size_t pdu_read(struct p9_buffer *pdu, void *data, size_t size)
 {
 	size_t len = min(pdu->size - pdu->offset, size);
-	printf("%d %d %d %d sdata %p \n", len, pdu->offset,size,pdu->size ,&pdu->sdata[0]);
-	printf("data in the pdu :%hhu %hhu %hhu %hhu \n",pdu->sdata[0],pdu->sdata[1],pdu->sdata[2],pdu->sdata[3]);
+	//printf("%d %d %d %d sdata %p \n", len, pdu->offset,size,pdu->size ,&pdu->sdata[0]);
+	//printf("data in the pdu :%hhu %hhu %hhu %hhu \n",pdu->sdata[0],pdu->sdata[1],pdu->sdata[2],pdu->sdata[3]);
 	memcpy(data, &pdu->sdata[pdu->offset], len);
 	pdu->offset += len;
 	return size - len;
@@ -99,12 +99,12 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				int32_t *val = va_arg(ap, int32_t *);
 				int32_t le_val;
 				if (pdu_read(pdu, &le_val, sizeof(le_val))) {
-					printf("DId this break \n");
+					//printf("DId this break \n");
 					errcode = -EFAULT;
 					break;
 				}
 				*val = le_val;
-				printf("After sending :%d %d\n",*val,le_val);
+				//printf("After sending :%d %d\n",*val,le_val);
 		
 			}
 			break;
@@ -124,14 +124,14 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 
 				errcode = p9pdu_readf(pdu, proto_version,
 								"w", &len);
-				printf("len should be :%hu \n",len);
+				//printf("len should be :%hu \n",len);
 
 				if (errcode)
 					break;
 
 				*sptr = malloc(len + 1, M_TEMP, M_NOWAIT);
 				if (*sptr == NULL) {
-					printf("code break at EFAULT ..\n");
+					//printf("code break at EFAULT ..\n");
 					errcode = -EFAULT;
 					break;
 				}
@@ -541,19 +541,20 @@ void p9pdu_reset(struct p9_buffer *pdu)
 
 /* Directory entry read with the buf we have. Call this once we have the 
  * buf to parse .*/
-int p9dirent_read(struct p9_client *clnt, char *buf, int len,
+int p9dirent_read(struct p9_client *clnt, char *buf, int start, int len,
 		  struct dirent *dirent)
 {
 	struct p9_buffer fake_pdu;
 	int ret;
 	char *nameptr;
-	struct p9_qid qid; // Not used yet
+	struct p9_qid qid;
+	uint16_t le;
 	uint64_t d_off; // NOt used yet/
 
 	fake_pdu.size = len;
 	fake_pdu.capacity = len;
 	fake_pdu.sdata = buf;
-	fake_pdu.offset = 0;
+	fake_pdu.offset = start;
 
 	ret = p9pdu_readf(&fake_pdu, clnt->proto_version, "Qqbs", &qid,
 			  &d_off, &dirent->d_type, &nameptr);
@@ -562,10 +563,13 @@ int p9dirent_read(struct p9_client *clnt, char *buf, int len,
 		goto out;
 	}
 
-	strcpy(dirent->d_name, nameptr);
+	le = strlen(nameptr);
+	strncpy(dirent->d_name, nameptr, le);
+ 	dirent->d_namlen = le;
 	free(nameptr, M_TEMP);
+	dirent->d_fileno = (uint32_t)(qid.path >> 32);
 
 out:
-	printf("fake_pdu.offset :%d\n",fake_pdu.offset);
+	printf("fake_pdu.offset :%d %hu\n",fake_pdu.offset,le);
 	return fake_pdu.offset;
 }

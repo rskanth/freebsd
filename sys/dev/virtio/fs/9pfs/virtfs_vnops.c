@@ -49,7 +49,7 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 		 * newfid */
 
 		newfid = p9_client_walk(dnp->vfid,
-	    		cnp->cn_namelen, &cnp->cn_nameptr, 1);
+	    		1, &cnp->cn_nameptr, 1);
 		if (newfid != NULL) {
 			int ltype = 0;
 
@@ -91,6 +91,7 @@ static int
 virtfs_create(struct vop_create_args *ap)
 {
 	p9_debug(VOPS, "create");                      
+	
 	return 0;
 }
 
@@ -111,8 +112,8 @@ virtfs_open(struct vop_open_args *ap)
 	struct p9_wstat *stat;
 	size_t filesize;
 
-	p9_debug(VOPS, "open \n");                      
-	
+	p9_debug(VOPS, "open \n");
+
 	if (np->v_opens > 0) {
 		np->v_opens++;
 		return (0);
@@ -154,8 +155,8 @@ virtfs_close(struct vop_close_args *ap)
 	p9_debug(VOPS, "close");                      
 	
 
-	printf("%s(fid %d ofid %d opens %d)\n", __func__,
-	    np->vfid->fid, np->vofid->fid, np->v_opens);
+	//printf("%s(fid %d ofid %d opens %d)\n", __func__,
+	//    np->vfid->fid, np->vofid->fid, np->v_opens);
 	np->v_opens--;
 	if (np->v_opens == 0) {
 		//virtfs_relfid(np->virtfs_ses, np->vofid);
@@ -225,6 +226,31 @@ virtfs_access(struct vop_access_args *ap)
 
 	return error;
 }
+/* for now this is used in getattr. We can change the definition and call this from
+ * 
+ */
+static int
+reload_stats(struct vnode *vp)
+{
+	struct p9_wstat *st = NULL;
+	int error = 0;
+    	struct virtfs_node *node = VTON(vp);
+
+	st = p9_client_stat(node->vfid);
+
+	if (st == NULL) {
+		error = -ENOMEM;
+		goto out;
+	}
+
+	memcpy(&node->vqid, &st->qid, sizeof(st->qid));
+	/* Init the vnode with the disk info*/
+	virtfs_stat_vnode_u(st, vp);
+	free(st, M_TEMP);
+	
+out:
+	return error;
+}
 
 static int
 virtfs_getattr(struct vop_getattr_args *ap)
@@ -233,9 +259,14 @@ virtfs_getattr(struct vop_getattr_args *ap)
         struct vattr *vap = ap->a_vap;
         struct virtfs_node *node = VTON(vp);
         struct virtfs_inode *inode = &node->inode;
+	int error = 0;
 	p9_debug(VOPS, "getattr \n");
-	printf("modes in getattr %u %u\n",inode->i_mode,IFTOVT(inode->i_mode));
-        
+	//printf("modes in getattr %u %u\n",inode->i_mode,IFTOVT(inode->i_mode));
+       
+	/* Reload our stats once to get the right values.*/
+	error = reload_stats(vp);
+	if (error)
+		return error;
         /* Basic info */
         VATTR_NULL(vap);
         vap->va_atime.tv_sec = inode->i_atime;
@@ -248,11 +279,12 @@ virtfs_getattr(struct vop_getattr_args *ap)
         vap->va_size = inode->i_size;                                                    
         vap->va_filerev = 0;                                             
         vap->va_vaflags = 0;                                               
-	printf("type :%u %u\n",vap->va_type,vap->va_mode);
+	//printf("type :%u %u %lu\n",vap->va_type,vap->va_mode,vap->va_size);
  
-	return 0;
+	return error;
 }
 
+#if 0
 static void
 dump_inode(struct virtfs_inode *inode)
 {
@@ -286,6 +318,7 @@ dump_stat(struct p9_wstat *stat)
 	printf("stat->n_uid :%u \n",stat->n_uid);	
 	printf("stat->n_gid :%u \n",stat->n_gid);	
 }
+#endif
 
 static int 
 virtfs_mode2perm(struct virtfs_session *ses,
@@ -351,7 +384,7 @@ virtfs_stat_vnode_u(struct p9_wstat *stat, struct vnode *vp)
 	struct virtfs_inode *inode = &np->inode;
 	struct virtfs_session *ses = np->virtfs_ses;
 
-	dump_stat(stat);
+	//dump_stat(stat);
 	inode->i_size = stat->size;
 
 	inode->i_mtime = stat->mtime;
@@ -363,7 +396,7 @@ virtfs_stat_vnode_u(struct p9_wstat *stat, struct vnode *vp)
 	inode->n_gid = stat->n_gid;
 	inode->i_mode = virtfs_mode_to_generic(ses, stat);
 	memcpy(&np->vqid, &stat->qid, sizeof(stat->qid));
-	dump_inode(inode);
+	//dump_inode(inode);
 
 	vp->v_type = IFTOVT(inode->i_mode);
 
@@ -453,12 +486,12 @@ dt_type(struct p9_wstat *stat)
                         
         return rettype;
 }
-#endif
 
+#endif
 static void 
 dump_p9dirent(struct dirent *p)
 {
-	printf("name :%s d_reclen%hu d_type:%hhu\n ",p->d_name,p->d_reclen,p->d_type);
+	printf("name :%s d_reclen%hu d_type:%hhu ino_%hu \n",p->d_name,p->d_reclen,p->d_type,p->d_fileno);
 }
 
 /*
@@ -470,17 +503,19 @@ virtfs_readdir(struct vop_readdir_args *ap)
 {
 	struct uio *uio = ap->a_uio;
         struct vnode *vp = ap->a_vp;
-	// do we need this ? 
+	// do we need this ? ofcourse we can do some magic with this
+	// add correct fields to the direnty .:TODO
 	//struct p9_dirent p9_dirent;
         struct dirent cde;
-	uint64_t offset=0;
+	uint64_t offset = 0,diroffset;
 	struct virtfs_node *np = VTON(ap->a_vp);
         int error = 0;
 	int count = 0;
 	char *data = NULL;
-	int ndirents= 0;
+	uint64_t file_size;
+	//int ndirents = 0;
 	struct p9_client *clnt = np->virtfs_ses->clnt;
-	printf("Readdir called ..\n");
+	//printf("Readdir called ..\n");
 
 	if (ap->a_uio->uio_iov->iov_len <= 0)
 		return (EINVAL);
@@ -490,52 +525,44 @@ virtfs_readdir(struct vop_readdir_args *ap)
 
 	error = 0;
 
-	/* Ok first even before , we go to qemu and fetch for info, do "." and ".."*/
-	if (uio->uio_offset == 0) {
-		/* . entry */
-		cde.d_fileno = np->vfid->fid;
-		cde.d_type = DT_DIR;
-		cde.d_namlen = 1;
-		cde.d_name[0] = '.';
-		cde.d_name[1] = '\0';
-		cde.d_reclen = GENERIC_DIRSIZ(&cde);
-		error = uiomove(&cde, cde.d_reclen, uio);
-		if (error)
-			return error;
-
-		uio->uio_offset = 1;
-		ndirents++;
+	file_size = np->inode.i_size;
+	// If my assumptions are correct, offset should be equal to 
+	// or greater than the file size (moslty equal as we are using the
+	// same dirent structures here too 
+	if (uio->uio_offset >= file_size)
+	{
+		printf("should be hitting after a while ..%lu %lu \n",uio->uio_offset,file_size);
+		return -ENOENT;
 	}
-	if (uio->uio_offset == 1) {
-		/* .. entry */
-		cde.d_type = DT_DIR;
-		cde.d_namlen = 2;
-		cde.d_name[0] = '.';
-		cde.d_name[1] = '.';
-		cde.d_name[2] = '\0';
-		cde.d_reclen = GENERIC_DIRSIZ(&cde);
-		error = uiomove(&cde, cde.d_reclen, uio);
-		if (error)
-			return error;
 
-		ndirents++;
-	}
+
+        p9_debug(VFS, "nandfs_readdir filesize %jd resid %zd\n",
+	   (uintmax_t)file_size, uio->uio_resid);
+
+
 	/* Go to QEMU to fetch stuff and make sense out of it. */
-
-	/* Our version of the readdir through the virtio. The data buf has the 
+	/* Our version of the readdir through the virtio. The data buf has the
 	 * data block information. Now parse through the buf and make the dirent.
 	 */
 
-	/* Allocate the  buffer first */
+	/* Allocate the a 8K buffer firsta 8K. We can only do 8K at a time */
 	data = malloc(clnt->msize, M_TEMP, M_WAITOK | M_ZERO);
-	if (data == NULL) 
+	if (data == NULL)
 		return EIO;
-	count = p9_client_readdir(np->vofid, (char *)data,
-		clnt->msize, 0); /* The max size our client can handle */
 
-	if (count < 0) {
-		return (EIO);
-	}
+	/* We havnt reached the end yet. read more. */
+        if ((uio->uio_resid >= sizeof(struct dirent))) {
+                diroffset = uio->uio_offset;
+		offset = 0;
+
+		/* For now we assume our buffer 8K is enough for entries */
+		/* Moving forward we have to call this in a loop.*/
+		count = p9_client_readdir(np->vofid, (char *)data,
+			clnt->msize, 0); /* The max size our client can handle */
+
+		if (count < 0) {
+			return (EIO);
+		}
 #if 0
 	struct p9_dirent {
         struct p9_qid qid;
@@ -544,46 +571,67 @@ virtfs_readdir(struct vop_readdir_args *ap)
         char d_name[256];
 };
 #endif // Directory entry
-	printf("count number of bytes ..%d\n",count);
-	offset = 0;
-	// I think p9_dirent is bigger than dirent so we should be ok 
-	// We might have some extra rounds of loops.
-	// check first if we have enough to get a p9_dirent.
-	while (offset < count) {
+		//printf("count number of bytes ..%d\n",count);
+		/* Call this dude only if we can push more stuff */
 
-		/* Read and make sense out of the buffer in one dirent
-		 * This is part of 9p protocol read.
-		 * This reads one p9_dirent, now append it to dirent(FREEBSD specifc)
-		 * and continuing with the parse
-		 */
-		printf("make sense out of data:%p\n",data);
-		memset(&cde, 0, sizeof(struct dirent));
-		error = p9dirent_read(clnt, data, count,
-                  &cde);
-                if (error < 0) {
-                      p9_debug(VFS, "returned %d\n", error);
-                      return -EIO;
-                }
-		dump_p9dirent(&cde);
+		while (offset + QEMU_DIRENTRY_SZ <= count) { // We dont have enough bytes.
 
-		cde.d_reclen = GENERIC_DIRSIZ(&cde);
-		printf("cde entry done \n");
-		/*
-		 * If there isn't enough space in the uio to return a
-		 * whole dirent, break off read
-		 */
-		if (uio->uio_resid < GENERIC_DIRSIZ(&cde))
-			break;
+			/* Read and make sense out of the buffer in one dirent
+			 * This is part of 9p protocol read.
+			 * This reads one p9_dirent, now append it to dirent(FREEBSD specifc)
+			 * and continuing with the parse
+			 */
+		//	printf("make sense out of data:%p\n",data);
+			memset(&cde, 0, sizeof(struct dirent));
+			// Note cnt is the number of characters advacned in the pdu buffer
+			// So advance the buffer by that many bytes.
+			offset = p9dirent_read(clnt, data, offset, count,
+			  &cde);
 
-		/* Transfer */
-		uiomove(&cde, GENERIC_DIRSIZ(&cde), uio);
+			if (offset < 0) {
+			      p9_debug(VFS, "returned %d\n", cnt);
+			      return -EIO;
+			}
 
-		/* Advance */
-		offset += cde.d_reclen;
+			cde.d_reclen = GENERIC_DIRSIZ(&cde);
+		//	printf("cde entry done \n");
+			/*
+			 * If there isn't enough space in the uio to return a
+			 * whole dirent, break off read
+			 */
+			if (uio->uio_resid < GENERIC_DIRSIZ(&cde))
+				break;
+
+			//printf("offsets before move : %lu %lu %lu \n",offset,uio->uio_offset,uio->uio_resid);
+		
+			dump_p9dirent(&cde);
+			cde.d_fileno = 23+offset;
+			dump_p9dirent(&cde);
+			/* Transfer */
+			error = uiomove(&cde, GENERIC_DIRSIZ(&cde), uio);
+			
+			if(error) {
+				printf("uiomove failed..\n");
+				return error;
+			}
+			diroffset += cde.d_reclen; // We have added a new direntry.
+			//printf("offset : %d %lu %lu \n",offset,uio->uio_offset,uio->uio_resid);
+		}
+	}
+	/* Pass on last transferred offset */
+	uio->uio_offset = diroffset;
+
+	// This should be fixed to set it to file size/
+	if (ap->a_eofflag) {
+                *ap->a_eofflag = 1;
+		//printf("eof is being set ..\n");		
+
+	}
+	else
+	{
+		printf("WHy dont we have a eooflag \n");	
 	}
 
-	/* Pass on last transferred offset */
-	uio->uio_offset = offset;
 	if (data)
 		free(data, M_TEMP);
 

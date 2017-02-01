@@ -116,7 +116,7 @@ int p9_client_statfs(struct p9_fid *fid, struct p9_rstatfs *sb);
 
 int p9_client_version(struct p9_client *clnt);
 int p9_client_readdir(struct p9_fid *fid, char *data, uint32_t count, uint64_t offset);
-int p9dirent_read(struct p9_client *clnt, char *buf, int len,
+int p9dirent_read(struct p9_client *clnt, char *buf, int start, int len,
 		  struct dirent *dirent);
 struct p9_wstat *p9_client_stat(struct p9_fid *fid);
 int p9_client_wstat(struct p9_fid *fid, struct p9_wstat *wst);

@@ -47,6 +47,7 @@ struct virtfs_node {
 
 
 #define VTON(vp) vp->v_data
+#define QEMU_DIRENTRY_SZ 25
 
 #define	MAXUNAMELEN	32
 

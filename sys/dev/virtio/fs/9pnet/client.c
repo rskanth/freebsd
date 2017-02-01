@@ -109,7 +109,7 @@ struct p9_req_t *p9_get_request(void)
 		req->tc = p9_buffer_alloc(alloc_msize);
 	if (!req->rc) {
 		req->rc = p9_buffer_alloc(alloc_msize);
-		printf("receive buffer %p \n",req->rc);	
+		//printf("receive buffer %p \n",req->rc);	
 	}	
 
 	if (req->tc == NULL || req->rc == NULL) 
@@ -117,6 +117,7 @@ struct p9_req_t *p9_get_request(void)
 	return req;
 }
 
+#if 0
 static void
 dump_pdu(struct p9_buffer *buf)
 {
@@ -125,11 +126,12 @@ dump_pdu(struct p9_buffer *buf)
 	char *tbuf = &buf->sdata[0];
 	/* Just dump 30 character of the pdu */
 
-	printf("buf->sdata[0] address %p \n",&tbuf[0]);
+	//printf("buf->sdata[0] address %p \n",&tbuf[0]);
 	/*Dump all the first 30 characters */
 	for(i=0;i<30;i++)
 		printf("%hhu ",tbuf[i]);
 }
+#endif
 
 static int
 p9_parse_receive(struct p9_buffer *buf)
@@ -144,7 +146,7 @@ p9_parse_receive(struct p9_buffer *buf)
 	/* This value is set by QEMU for the header.*/
         if (buf->size == 0) buf->size = 7;
 
-	dump_pdu(buf);
+	//dump_pdu(buf);
 
 	/* This is the initial header parse. size, type, and tag .*/
         err = p9pdu_readf(buf, 0, "dbw", &size, &type, &tag);
@@ -169,7 +171,7 @@ p9_client_check_return(struct p9_client *c,
         int err;
         int ecode;
 
-	dump_pdu(req->tc);
+	//dump_pdu(req->tc);
 	/* Check what we have in the receive bufer .*/
         err = p9_parse_receive(req->rc);
 
@@ -245,8 +247,8 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 		return NULL;
 	/* Call into the transport for submission. */
 
-	dump_pdu(req->tc);
-	dump_pdu(req->rc);
+	//dump_pdu(req->tc);
+	//dump_pdu(req->rc);
 
 	err = c->trans_mod->request(c, req);
 	
@@ -483,13 +485,14 @@ struct p9_fid {
 }; */
 
 
+#if 0
 static 
 void dump_fid(struct p9_fid *fid)
 {
 	printf("<<<DUMP_FID \n");
 	printf("fid_num :%u %d %d\n",fid->fid,fid->mode,fid->uid);
 }
-
+#endif
 /* This is called from the mount. This fid which is created for the root inode.
  * the other instances already have the afid .
  */
@@ -513,7 +516,7 @@ struct p9_fid *p9_client_attach(struct p9_client *clnt)
 		goto error;
 	}
 	fid->uid = -1;
-	dump_fid(fid);
+	//dump_fid(fid);
 
 	/* Get uname from mount and stick it in this function. */
 	req = p9_client_request(clnt, P9PROTO_TATTACH, "ddssd", fid->fid,

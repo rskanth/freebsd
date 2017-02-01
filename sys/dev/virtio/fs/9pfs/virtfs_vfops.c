@@ -150,10 +150,10 @@ int virtfs_vget_wrapper
 	error = vfs_hash_get(mp, ino, flags, td, vpp, NULL, NULL);
 	if (error || *vpp != NULL)
 	{
-		printf("found the node proceed %p\n",*vpp);
+		//printf("found the node proceed %p\n",*vpp);
 		return (error);
 	}
-	printf("WE havent found the node .. GO ahead to create one ..\n");
+	//printf("WE havent found the node .. GO ahead to create one ..\n");
 
 	/*
 	 * We must promote to an exclusive lock for vnode creation.  This
@@ -480,7 +480,7 @@ virtfs_root(struct mount *mp, int lkflags, struct vnode **vpp)
 		return error;
 	}
 	np->v_node = *vpp;
-	printf("Successfully initialized root vnode .%p.\n",*vpp);
+	//printf("Successfully initialized root vnode .%p.\n",*vpp);
 	vref(*vpp);
 
 	return (error);
