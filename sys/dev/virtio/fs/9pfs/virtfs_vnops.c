@@ -12,13 +12,36 @@ __FBSDID("$FreeBSD$");
 #include <sys/namei.h>
 #include <sys/stat.h>
 
+#include <sys/types.h>
+#include <fcntl.h>
 #include "virtfs_proto.h"
 #include "virtfs.h"
 #include "../client.h"
 
 
 struct vop_vector virtfs_vnops;
-static MALLOC_DEFINE(M_P9NODE, "virtfs_node", "virtfs node structures");
+
+static int
+virtfs_reclaim(struct vop_reclaim_args *ap)
+{       
+        struct vnode *vp = ap->a_vp;
+        struct virtfs_node *virtfs_node = VTON(vp);
+
+        p9_debug(VOPS, "%s: vp:%p node:%p\n", __func__, vp, virtfs_node);
+
+        /* Invalidate all entries to a particular vnode. */
+        cache_purge(vp);
+
+        /* Destroy the vm object and flush associated pages. */
+        vnode_destroy_vobject(vp);
+	vfs_hash_remove(vp);
+                
+        /* Dispose all node knowledge */
+        dispose_node(&virtfs_node);
+
+        return (0);
+}
+
 
 static int
 virtfs_lookup(struct vop_cachedlookup_args *ap)
@@ -78,6 +101,9 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 			*vpp = vp;
 			vref(*vpp);
 		}
+		else {
+			return error;
+		}
 	}
 	/* Store the result the the cache if MAKEENTRY is specified in flags */
 	if ((cnp->cn_flags & MAKEENTRY) != 0 && cnp->cn_nameiop != CREATE)
@@ -103,6 +129,42 @@ virtfs_mknod(struct vop_mknod_args *ap)
 	return 0;
 }
 
+static int virtfs_uflags_mode(int uflags, int extended)
+{
+        int ret;
+
+        ret = 0;
+
+	/* Convert first to O flags.*/
+	// Can this be shorted to use Fflags directly. ?
+	uflags = OFLAGS(uflags);
+
+        switch (uflags&3) {
+        default:
+        case O_RDONLY:
+                ret = P9PROTO_OREAD;
+                break;
+
+        case O_WRONLY:
+                ret = P9PROTO_OWRITE;
+                break;
+
+        case O_RDWR:
+                ret = P9PROTO_ORDWR;
+                break;
+        }
+
+        if (extended) {
+                if (uflags & O_EXCL)
+                        ret |= P9PROTO_OEXCL;
+
+                if (uflags & O_APPEND)
+                        ret |= P9PROTO_OAPPEND;
+        }
+
+        return ret;
+}
+
 static int
 virtfs_open(struct vop_open_args *ap)
 {
@@ -111,6 +173,7 @@ virtfs_open(struct vop_open_args *ap)
 	struct p9_fid *fid = np->vfid;
 	struct p9_wstat *stat;
 	size_t filesize;
+	int mode;
 
 	p9_debug(VOPS, "open \n");
 
@@ -123,23 +186,25 @@ virtfs_open(struct vop_open_args *ap)
 	if (error != 0)
 		return (error);
 
-	if (ap->a_vp->v_type == VDIR) {
+	/* According to 9p protocol, we cannot do Fileops on an already opened
+	 * file. So we have to clone a new fid by walking and then use the open fids
+	 * to do the open. 
+	 */
+	if (np->vofid == NULL) {
+
+		/*ofid is the open fid for this file.*/
+		/* Note: Client_walk returns struct p9_fid* */
+		np->vofid = p9_client_walk(np->vfid,
+		     0, NULL, 1); /* Clone the fid here.*/
 		if (np->vofid == NULL) {
-
-			/*ofid is the open fid for this file.*/
-			/* Note: Client_walk returns struct p9_fid* */
-			np->vofid = p9_client_walk(np->vfid,
-			     0, NULL, 1); /* Clone the fid here.*/
-			if (np->vofid == NULL) {
-				return (-ENOMEM);
-			}
+			return (-ENOMEM);
 		}
-		fid = np->vofid;
 	}
-
+	fid = np->vofid;
 	filesize = np->inode.i_size;
-	/* Use the newly created fid for the open.*/
-	error = p9_client_open(fid, ap->a_mode);
+	mode = virtfs_uflags_mode(ap->a_mode, 0);
+	
+	error = p9_client_open(fid, mode);
 	if (error == 0) {
 		np->v_opens = 1;
 		vnode_create_vobject(ap->a_vp, filesize, ap->a_td);
@@ -152,15 +217,13 @@ static int
 virtfs_close(struct vop_close_args *ap)
 {
 	struct virtfs_node *np = VTON(ap->a_vp);
-	p9_debug(VOPS, "close");                      
-	
 
-	//printf("%s(fid %d ofid %d opens %d)\n", __func__,
-	//    np->vfid->fid, np->vofid->fid, np->v_opens);
+	p9_debug(VFS,"%s(fid %d ofid %d opens %d)\n", __func__,
+	    np->vfid->fid, np->vofid->fid, np->v_opens);
 	np->v_opens--;
 	if (np->v_opens == 0) {
-		//virtfs_relfid(np->virtfs_ses, np->vofid);
-		
+		/* clean up */
+		//p9_fid_destroy(np->vofid);
 		np->vofid = NULL;
 	}
 
@@ -206,7 +269,7 @@ virtfs_access(struct vop_access_args *ap)
         struct vnode *vp = ap->a_vp;
         accmode_t accmode = ap->a_accmode;
         struct ucred *cred = ap->a_cred;
-        struct vattr vap;       
+        struct vattr vap;
         int error;
 
         p9_debug(VOPS,"virtfs_access");
@@ -229,8 +292,8 @@ virtfs_access(struct vop_access_args *ap)
 /* for now this is used in getattr. We can change the definition and call this from
  * 
  */
-static int
-reload_stats(struct vnode *vp)
+int
+virtfs_reload_stats(struct vnode *vp)
 {
 	struct p9_wstat *st = NULL;
 	int error = 0;
@@ -261,10 +324,10 @@ virtfs_getattr(struct vop_getattr_args *ap)
         struct virtfs_inode *inode = &node->inode;
 	int error = 0;
 	p9_debug(VOPS, "getattr \n");
-	//printf("modes in getattr %u %u\n",inode->i_mode,IFTOVT(inode->i_mode));
+	printf("modes in getattr %u %u\n",inode->i_mode,IFTOVT(inode->i_mode));
        
 	/* Reload our stats once to get the right values.*/
-	error = reload_stats(vp);
+	error = virtfs_reload_stats(vp);
 	if (error)
 		return error;
         /* Basic info */
@@ -273,13 +336,12 @@ virtfs_getattr(struct vop_getattr_args *ap)
         vap->va_mtime.tv_sec = inode->i_mtime;                                           
 	vap->va_type =  IFTOVT(inode->i_mode);
         vap->va_mode = inode->i_mode;
-        vap->va_uid = inode->n_uid;                                                     
-        vap->va_gid = inode->n_gid;                                                     
+        vap->va_uid = inode->n_uid;
+        vap->va_gid = inode->n_gid;
         vap->va_fsid = vp->v_mount->mnt_stat.f_fsid.val[0];                              
-        vap->va_size = inode->i_size;                                                    
-        vap->va_filerev = 0;                                             
-        vap->va_vaflags = 0;                                               
-	//printf("type :%u %u %lu\n",vap->va_type,vap->va_mode,vap->va_size);
+        vap->va_size = inode->i_size;
+        vap->va_filerev = 0;
+        vap->va_vaflags = 0;
  
 	return error;
 }
@@ -385,7 +447,7 @@ virtfs_stat_vnode_u(struct p9_wstat *stat, struct vnode *vp)
 	struct virtfs_session *ses = np->virtfs_ses;
 
 	//dump_stat(stat);
-	inode->i_size = stat->size;
+	inode->i_size = stat->length;
 
 	inode->i_mtime = stat->mtime;
 	inode->i_atime = stat->atime;
@@ -421,6 +483,65 @@ virtfs_setattr(struct vop_setattr_args *ap)
 static int
 virtfs_read(struct vop_read_args *ap)
 {
+	struct vnode *vp = ap->a_vp;
+        struct uio *uio = ap->a_uio;
+        struct virtfs_node *np = VTON(vp);
+	char *data = NULL;
+	uint64_t offset;
+	uint64_t ret;
+	uint64_t resid;
+	uint32_t count;
+	int error = 0;
+	uint64_t filesize;
+	struct p9_client *clnt = np->virtfs_ses->clnt;
+	
+	if (vp->v_type == VCHR || vp->v_type == VBLK)
+                return (EOPNOTSUPP);
+
+	if (vp->v_type != VREG)
+		return EISDIR;
+
+        if (uio->uio_resid == 0)
+                return (0);
+        if (uio->uio_offset < 0)
+                return (EINVAL);
+
+	/* whr in the file are we to start reading */
+	offset = uio->uio_offset;
+	filesize = np->inode.i_size;
+	if(uio->uio_offset >= filesize)
+		return 0;
+
+	printf("vnode ->vtype :%d \n",vp->v_type);
+	/* Allocate the a 8K buffer firsta 8K. We can only do 8K at a time */
+	data = malloc(clnt->msize, M_TEMP, M_WAITOK | M_ZERO);
+	if (data == NULL)
+		return EIO;
+
+	while ((resid = uio->uio_resid) > 0) {
+		if (offset >= filesize)
+			break;
+		count = MIN(filesize - uio->uio_offset, resid);
+		if (count == 0)
+			break;
+
+		memset(data, 0, clnt->msize); ///
+		/* Copy m_size bytes into the uio */
+		ret = p9_client_read(np->vofid, offset, count, data);
+
+		/* count can either be what it was here or lesser(based on what we get
+		 */
+                error = uiomove(data, ret, uio);
+		if (error) {
+			return error;
+		}
+		offset += ret;
+        }
+	uio->uio_offset = offset;
+
+	if (data)
+		free(data, M_TEMP);
+
 	return 0;
 }
 
@@ -503,9 +624,6 @@ virtfs_readdir(struct vop_readdir_args *ap)
 {
 	struct uio *uio = ap->a_uio;
         struct vnode *vp = ap->a_vp;
-	// do we need this ? ofcourse we can do some magic with this
-	// add correct fields to the direnty .:TODO
-	//struct p9_dirent p9_dirent;
         struct dirent cde;
 	uint64_t offset = 0,diroffset;
 	struct virtfs_node *np = VTON(ap->a_vp);
@@ -513,9 +631,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	int count = 0;
 	char *data = NULL;
 	uint64_t file_size;
-	//int ndirents = 0;
 	struct p9_client *clnt = np->virtfs_ses->clnt;
-	//printf("Readdir called ..\n");
 
 	if (ap->a_uio->uio_iov->iov_len <= 0)
 		return (EINVAL);
@@ -523,20 +639,12 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	if (vp->v_type != VDIR)
 		return (ENOTDIR);
 
-	error = 0;
-
 	file_size = np->inode.i_size;
-	// If my assumptions are correct, offset should be equal to 
-	// or greater than the file size (moslty equal as we are using the
-	// same dirent structures here too 
+
 	if (uio->uio_offset >= file_size)
-	{
-		printf("should be hitting after a while ..%lu %lu \n",uio->uio_offset,file_size);
-		return -ENOENT;
-	}
+		return ENOENT;
 
-
-        p9_debug(VFS, "nandfs_readdir filesize %jd resid %zd\n",
+        p9_debug(VOPS, "virtfs_readdir filesize %jd resid %zd\n",
 	   (uintmax_t)file_size, uio->uio_resid);
 
 
@@ -550,29 +658,21 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	if (data == NULL)
 		return EIO;
 
+	count = min(clnt->msize, uio->uio_resid);
+
+	offset = 0;
 	/* We havnt reached the end yet. read more. */
         if ((uio->uio_resid >= sizeof(struct dirent))) {
                 diroffset = uio->uio_offset;
-		offset = 0;
 
 		/* For now we assume our buffer 8K is enough for entries */
 		/* Moving forward we have to call this in a loop.*/
 		count = p9_client_readdir(np->vofid, (char *)data,
-			clnt->msize, 0); /* The max size our client can handle */
+			diroffset, count); /* The max size our client can handle */
 
 		if (count < 0) {
 			return (EIO);
 		}
-#if 0
-	struct p9_dirent {
-        struct p9_qid qid;
-        uint64_t d_off;
-        unsigned char d_type;
-        char d_name[256];
-};
-#endif // Directory entry
-		//printf("count number of bytes ..%d\n",count);
-		/* Call this dude only if we can push more stuff */
 
 		while (offset + QEMU_DIRENTRY_SZ <= count) { // We dont have enough bytes.
 
@@ -581,20 +681,14 @@ virtfs_readdir(struct vop_readdir_args *ap)
 			 * This reads one p9_dirent, now append it to dirent(FREEBSD specifc)
 			 * and continuing with the parse
 			 */
-		//	printf("make sense out of data:%p\n",data);
 			memset(&cde, 0, sizeof(struct dirent));
-			// Note cnt is the number of characters advacned in the pdu buffer
-			// So advance the buffer by that many bytes.
 			offset = p9dirent_read(clnt, data, offset, count,
-			  &cde);
+				&cde);
 
-			if (offset < 0) {
-			      p9_debug(VFS, "returned %d\n", cnt);
-			      return -EIO;
-			}
+			if (offset < 0)
+				return -EIO;
 
 			cde.d_reclen = GENERIC_DIRSIZ(&cde);
-		//	printf("cde entry done \n");
 			/*
 			 * If there isn't enough space in the uio to return a
 			 * whole dirent, break off read
@@ -602,34 +696,23 @@ virtfs_readdir(struct vop_readdir_args *ap)
 			if (uio->uio_resid < GENERIC_DIRSIZ(&cde))
 				break;
 
-			//printf("offsets before move : %lu %lu %lu \n",offset,uio->uio_offset,uio->uio_resid);
-		
-			dump_p9dirent(&cde);
+			// Fix this number otherwise it ll break the vfs readir 
 			cde.d_fileno = 23+offset;
 			dump_p9dirent(&cde);
 			/* Transfer */
 			error = uiomove(&cde, GENERIC_DIRSIZ(&cde), uio);
-			
-			if(error) {
-				printf("uiomove failed..\n");
+
+			if(error)
 				return error;
-			}
 			diroffset += cde.d_reclen; // We have added a new direntry.
-			//printf("offset : %d %lu %lu \n",offset,uio->uio_offset,uio->uio_resid);
 		}
 	}
 	/* Pass on last transferred offset */
 	uio->uio_offset = diroffset;
 
-	// This should be fixed to set it to file size/
+	// This flag is not doing anything in the VFS
 	if (ap->a_eofflag) {
-                *ap->a_eofflag = 1;
-		//printf("eof is being set ..\n");		
-
-	}
-	else
-	{
-		printf("WHy dont we have a eooflag \n");	
+		*ap->a_eofflag = 1;
 	}
 
 	if (data)
@@ -659,6 +742,7 @@ struct vop_vector virtfs_vnops = {
 	.vop_access = 		virtfs_access,
 	.vop_getattr =		virtfs_getattr,
 	.vop_setattr =		virtfs_setattr,
+	.vop_reclaim =		virtfs_reclaim,
 	.vop_readdir =		virtfs_readdir,
 	.vop_create =		virtfs_create,
 	.vop_mknod =		virtfs_mknod,

@@ -26,13 +26,7 @@ __FBSDID("$FreeBSD$");
 #include "../9p.h"
 #include "virtfs.h"
 
-static MALLOC_DEFINE(M_P9REQ, "virtfsreq", "Request structures for virtfs");
 int p9_debug_level = 0xFFFF;
-/*
- * Plan 9 message handling.  This is primarily intended as a means of
- * performing marshalling/unmarshalling.
- */
-
 int
 virtfs_proto_dotl(struct virtfs_session *vses)
 {
@@ -45,7 +39,6 @@ virtfs_init_session(struct mount *mp)
     struct p9_fid *fid;
     struct virtfs_session *vses;
     struct virtfs_mount *virtmp;
-    //int rc = -ENOMEM;
 
     virtmp = mp->mnt_data;
     vses = &virtmp->virtfs_session;
@@ -66,29 +59,24 @@ virtfs_init_session(struct mount *mp)
         vses->flags |= VIRTFS_PROTO_2000U;
     }
 
-    /* whatever we get from client */
-    vses->maxdata = vses->clnt->msize;
-
     /* Attach with the backend host*/
     fid = p9_client_attach(vses->clnt);
 
     if (fid == NULL) {
 
-     //   rc = -ENOMEM;
         p9_debug(SUBR, "cannot attach\n");
-
         goto fail;
     }
-    printf("attach successful fid :%p\n",fid);
+    p9_debug(SUBR, "Attach successful fid :%p\n",fid);
 
     fid->uid = vses->uid;
-    printf("virtfs_init_session success \n");
+    p9_debug(SUBR, "INIT session successful\n");
 
     return fid;
 
 fail:
 
-   if (vses->clnt) /* go aheaad and destroy it */
+   if (vses->clnt)
 	p9_client_destroy(vses->clnt);
 
    return NULL;
@@ -99,17 +87,15 @@ void
 virtfs_close_session(struct mount *mp)
 {
 	struct virtfs_session *vses;
-	struct virtfs_mount *virtfsmp;
+	struct virtfs_mount *vmp;
 
-  	virtfsmp = VFSTOP9(mp);
-    	vses = &virtfsmp->virtfs_session;
+  	vmp = VFSTOP9(mp);
+    	vses = &vmp->virtfs_session;
 
 	/* Do the reverse of the init session  */
 	/* Detach the root fid.*/
 	p9_client_detach(vses->rnp.vfid);
 	/* Clean up the clnt structure. */
 	p9_client_destroy(vses->clnt);
-	/* CLeanup the mount structure. */
-	free(virtfsmp, M_TEMP);
 	p9_debug(SUBR, " Clean close session .\n");
 }

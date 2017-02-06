@@ -45,8 +45,10 @@ struct virtfs_node {
 	struct virtfs_session *virtfs_ses; /*  Session_ptr for this node */
 };
 
-
 #define VTON(vp) vp->v_data
+#define NTOV(node) node->v_node
+
+#define	VFSTOP9(mp) ((mp)->mnt_data)
 #define QEMU_DIRENTRY_SZ 25
 
 #define	MAXUNAMELEN	32
@@ -57,7 +59,6 @@ struct virtfs_session {
      unsigned char flags; /* these flags for the session */
      struct mount *virtfs_mount; /* mount point */
      struct virtfs_node rnp; /* root virtfss_node for this session */
-     unsigned int maxdata;   /* max data for client interface */
      uid_t uid;     /* the uid that has access */
      struct p9_client *clnt; /* 9p client */
      struct mtx virtfs_lock;
@@ -69,8 +70,6 @@ struct virtfs_mount {
 	struct mount *virtfs_mountp;
 };
 
-#define	VFSTOP9(mp) ((mp)->mnt_data)
-
 /* All session flags based on 9p versions  */
 enum virt_session_flags {
 	VIRTFS_PROTO_2000U	= 0x01,
@@ -78,19 +77,15 @@ enum virt_session_flags {
 };
 
 /* These are all the VIRTFS specific vops */
-//int virtfs_open(struct p9_client *clnt, int mode);
-//int virtfs_close(struct p9_client *clnt);
 int virtfs_stat_vnode_l(void);
 int virtfs_stat_vnode_u(struct p9_wstat *st, struct vnode *vp);
+int virtfs_reload_stats(struct vnode *vp);
 int virtfs_proto_dotl(struct virtfs_session *virtfss);
 struct p9_fid *virtfs_init_session(struct mount *mp);
 void virtfs_close_session(struct mount *mp);
 int virtfs_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp);
-int virtfs_vget_wrapper
-        (struct mount *mp,
-        struct virtfs_node *p9_node,
-        int flags,
-	struct p9_fid *fid,
-        struct vnode **vpp);
+int virtfs_vget_wrapper(struct mount *mp, struct virtfs_node *np, int flags,
+	struct p9_fid *fid, struct vnode **vpp);
+void dispose_node(struct virtfs_node **node);
 
 #endif /* __VIRTFS__ */
