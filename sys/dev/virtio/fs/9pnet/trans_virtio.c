@@ -25,6 +25,7 @@
 #define VT9P_LOCK(_sc) mtx_lock(VT9P_MTX(_sc))
 #define VT9P_UNLOCK(_sc) mtx_unlock(VT9P_MTX(_sc))
 #define VT9P_LOCK_INIT(_sc) mtx_init(VT9P_MTX(_sc), "VIRTIO 9P CHAN lock", NULL, MTX_DEF)
+#define VT9P_LOCK_DESTROY(_sc) mtx_destroy(VT9P_MTX(_sc))
 //#define VT9P_INIT(mtx)
 struct virtqueue;
 
@@ -128,9 +129,7 @@ vt9p_request(struct p9_client *client, struct p9_req_t *req)
 		printf("Something wrong with sglist append ..\n");	
 		return err;
 	}
-	//Number of nseg for sglist.
 	readable = sg->sg_nseg;
-	printf("readable :%d \n",readable);
 
 	err = sglist_append(sg, req->rc->sdata, req->rc->capacity);
 	if (err < 0) {
@@ -138,7 +137,6 @@ vt9p_request(struct p9_client *client, struct p9_req_t *req)
 		return err;
 	}
 	writable = sg->sg_nseg - readable;
-	printf("writable :%d \n",writable);
 	
 	virtqueue_dump(vq);
 req_retry:
@@ -151,7 +149,7 @@ req_retry:
 	 * wakeup again when we have resources or create a new
 	 * queue to enqueue and return back. */
 	if (err < 0) {
-		if (err == -ENOSPC) {
+		if (err == ENOSPC) {
 			chan->ring_bufs_avail = 0;
 			/* Condvar for the submit queue. Can we still hold chan lock ?*/
 			cv_wait(&chan->submit_cv, &chan->submit_cv_lock);
@@ -160,11 +158,10 @@ req_retry:
 		} else {
 			p9_debug(TRANS,
 				 "virtio rpc add_sgs returned failure\n");
-			return -EIO;
+			return EIO;
 		}
 	}
 
-	printf("Notified ..\n");
 	/* We have to notify */
 	virtqueue_notify(vq);
 	while((c = virtqueue_dequeue(vq, NULL)) == NULL)
@@ -258,25 +255,80 @@ gain:
 
 static int vt9p_alloc_virtqueue(struct vt9p_softc *sc)
 {
-    struct vq_alloc_info vq_info;
-    device_t dev = sc->vt9p_dev;
+    
+	struct vq_alloc_info vq_info;
+	device_t dev = sc->vt9p_dev;
 
-    VQ_ALLOC_INFO_INIT(&vq_info, sc->max_nsegs,
-            vt9p_intr_complete, sc, &sc->vt9p_vq,
-            "%s request", device_get_nameunit(dev));
+	VQ_ALLOC_INFO_INIT(&vq_info, sc->max_nsegs,
+		vt9p_intr_complete, sc, &sc->vt9p_vq,
+		"%s request", device_get_nameunit(dev));
 
-       return (virtio_alloc_virtqueues(dev, 0, 1, &vq_info));
+	return (virtio_alloc_virtqueues(dev, 0, 1, &vq_info));
 }
 
-static int vt9p_probe(device_t dev)
+static 
+int vt9p_probe(device_t dev)
 {
     /* VIRTIO_ID_9P is already defined */
     if (virtio_get_device_type(dev) != VIRTIO_ID_9P)
         return (ENXIO);
     device_set_desc(dev, "VirtIO 9P Transport");
-    printf("Probe successfully .\n");
+    p9_debug(TRANS, "Probe successful .\n");
 
     return (BUS_PROBE_DEFAULT); 
+}
+
+static void
+vt9p_stop(struct vt9p_softc *sc)
+{
+	/* Device specific stops .*/
+        virtqueue_disable_intr(sc->vt9p_vq);
+        virtio_stop(sc->vt9p_dev);
+}
+
+static int
+vt9p_remove(struct vt9p_softc *chan)
+{
+	//mtx_lock(&virtio_9p_lock);
+
+	/* Remove self from list so we don't get new users. */
+	//SLIST_REMOVE(&vt9p_softc_list, chan, vt9p_softc, chan_list);
+
+	/* Wait for existing users to close. 
+	while (chan->inuse) {
+		mtx_unlock(&virtio_9p_lock);
+		msleep(250);
+		mtx_lock(&virtio_9p_lock);
+	}
+	*/
+	chan->inuse = false; 
+	//mtx_unlock(&virtio_9p_lock);
+
+	// AGain call the vq deletion here otherwise it might leak.
+
+	free(chan->chan_name, M_TEMP);
+	return 0;
+}
+
+static int
+vt9p_detach(device_t dev)
+{
+	struct vt9p_softc *sc;
+        sc = device_get_softc(dev);
+
+        VT9P_LOCK(sc);
+        vt9p_stop(sc);
+        VT9P_UNLOCK(sc);
+
+        vt9p_remove(sc);
+
+	if (sc->vt9p_sglist) {
+		sglist_free(sc->vt9p_sglist);
+                sc->vt9p_sglist = NULL;
+	}
+	VT9P_LOCK_DESTROY(sc);
+
+        return (0);
 }
 
 struct vt9p_softc *global_ctx; // For now.. theres only one channel
@@ -305,7 +357,7 @@ static int vt9p_attach(device_t dev)
 	if (chan->vt9p_sglist == NULL) {
 		err = ENOMEM;
 		printf("cannot allocate sglist\n");
-		goto out_p9_free_vq;
+		goto out;
 	}
 
 	chan->inuse = false;
@@ -318,8 +370,8 @@ static int vt9p_attach(device_t dev)
 	name_len = strlen("hostshare");
 	chan->chan_name = malloc(name_len, M_TEMP,  M_WAITOK | M_ZERO);
 	if (!chan->chan_name) {
-		err = -ENOMEM;
-		goto out_p9_free_vq;
+		err = ENOMEM;
+		goto out;
 	}
 
 	chan->chan_name_len = name_len;
@@ -339,30 +391,30 @@ static int vt9p_attach(device_t dev)
 
 	if (err < 0) {
 		printf("allocating the virtqueue failed ..\n");
-		goto out_p9_free_vq;
+		goto out;
 	}
 
 	err = virtio_setup_intr(dev, INTR_TYPE_MISC|INTR_MPSAFE);
 	if (err) {
 		printf("cannot setup virtqueue interrupt\n");
-		goto out_p9_free_vq;
+		goto out;
 	}
 	err = virtqueue_enable_intr(chan->vt9p_vq);
 	
 	if (err) {
 		printf("cannot enable virtqueue interrupt\n");
-		goto out_p9_free_vq;
+		goto out;
 	}
-	
-	printf("enabling intr %d\n",err);
+
 	global_ctx = chan;
-	printf("Attach successfully \n"); 
+	p9_debug(TRANS, "Attach successfully \n"); 
 	return 0;
 
-out_p9_free_vq:
+out:
 	free(chan->chan_name, M_TEMP);
-	/// Free the vq here otherwise it might leak.
-	free(chan, M_TEMP);
+
+	/* Something went wrong, detach the device */
+	vt9p_detach(dev);
 	return err;
 }
 
@@ -418,37 +470,6 @@ vt9p_create(struct p9_client *client)
 	return 0;
 }
 
-/**
- * vt9p_remove - clean up resources associated with a virtio device
- * @vt9p_dev: virtio device to remove
- *
- */
-
-static int vt9p_remove(device_t vt9p_dev)
-{
-	struct vt9p_softc *chan = device_get_softc(vt9p_dev);
-
-	//mtx_lock(&virtio_9p_lock);
-
-	/* Remove self from list so we don't get new users. */
-	//SLIST_REMOVE(&vt9p_softc_list, chan, vt9p_softc, chan_list);
-
-	/* Wait for existing users to close. 
-	while (chan->inuse) {
-		mtx_unlock(&virtio_9p_lock);
-		msleep(250);
-		mtx_lock(&virtio_9p_lock);
-	}
-	*/
-	chan->inuse = false; 
-	//mtx_unlock(&virtio_9p_lock);
-
-	// AGain call the vq deletion here otherwise it might leak.
-
-	free(chan->chan_name, M_TEMP);
-	return 0;
-}
-
 static struct p9_trans_module vt9p_trans = {
 	.name = "virtio",
 	.create = vt9p_create,
@@ -487,7 +508,7 @@ struct p9_trans_module *p9_get_default_trans(void)
 
 void p9_put_trans(struct p9_trans_module *m)
 {
-	printf("%s: XXX not implemented\n", __func__);
+	printf("%s: its just a stub now\n", __func__);
 }
 
 
@@ -495,7 +516,7 @@ static device_method_t vt9p_mthds[] = {
     /* Device methods. */
     DEVMETHOD(device_probe,     vt9p_probe),
     DEVMETHOD(device_attach,    vt9p_attach),
-    DEVMETHOD(device_detach,    vt9p_remove),
+    DEVMETHOD(device_detach,    vt9p_detach),
     DEVMETHOD_END
 };
 

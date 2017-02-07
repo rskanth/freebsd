@@ -92,9 +92,6 @@ virtfs_close_session(struct mount *mp)
   	vmp = VFSTOP9(mp);
     	vses = &vmp->virtfs_session;
 
-	/* Do the reverse of the init session  */
-	/* Detach the root fid.*/
-	p9_client_detach(vses->rnp.vfid);
 	/* Clean up the clnt structure. */
 	p9_client_destroy(vses->clnt);
 	p9_debug(SUBR, " Clean close session .\n");

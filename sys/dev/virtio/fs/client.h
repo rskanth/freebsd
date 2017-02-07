@@ -112,6 +112,7 @@ struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 		char **wnames, int clone);
 struct p9_fid *p9_fid_create(struct p9_client *clnt);
 void p9_fid_destroy(struct p9_fid *fid);
+int p9_client_clunk(struct p9_fid *fid);
 
 int p9_client_statfs(struct p9_fid *fid, struct p9_rstatfs *sb);
 int p9_client_version(struct p9_client *clnt);

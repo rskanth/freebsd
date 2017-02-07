@@ -297,7 +297,6 @@ struct p9_fid *p9_fid_create(struct p9_client *clnt)
 	fid->rdir = NULL;
 
 	return fid;
-
 }
 
 void p9_fid_destroy(struct p9_fid *fid)
@@ -548,8 +547,9 @@ error:
 	return NULL;
 }
 
-/* Called as the shutdown/unmount process. */
-int p9_client_detach(struct p9_fid *fid)
+#if 0
+static int
+p9_client_remove(struct p9_fid *fid)
 {
 	int err;
 	struct p9_client *clnt;
@@ -561,7 +561,7 @@ int p9_client_detach(struct p9_fid *fid)
 
 	req = p9_client_request(clnt, P9PROTO_TREMOVE, "d", fid->fid);
 	if (req == NULL) {
-		err = -ENOMEM;
+		err = ENOMEM;
 		goto error;
 	}
 
@@ -569,19 +569,20 @@ int p9_client_detach(struct p9_fid *fid)
 
 	p9_free_req(req);
 error:
-	if (err == -ENOSPC)
+	if (err == ENOSPC)
 		p9_client_close(fid);
 	else
 		p9_fid_destroy(fid);
 	return err;
 }
+#endif
 
 /* 
  * When an extra fid has been created on the qemu and we found errors, we are going
  * to clunk the fid again and free the fid to return ENOENT (ex from lookup to reflect
  * that
  */
-static int 
+int 
 p9_client_clunk(struct p9_fid *fid)
 {
         int err;
@@ -600,7 +601,7 @@ p9_client_clunk(struct p9_fid *fid)
 
         req = p9_client_request(clnt, P9PROTO_TCLUNK, "d", fid->fid);
         if (req == NULL) {
-                err = -ENOMEM;
+                err = ENOMEM;
                 goto error;
         }
 

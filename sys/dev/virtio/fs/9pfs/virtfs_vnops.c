@@ -36,12 +36,11 @@ virtfs_reclaim(struct vop_reclaim_args *ap)
         vnode_destroy_vobject(vp);
 	vfs_hash_remove(vp);
                 
-        /* Dispose all node knowledge */
-        dispose_node(&virtfs_node);
+        /* Dispose all node knowledge.*/
+       	dispose_node(&virtfs_node);
 
         return (0);
 }
-
 
 static int
 virtfs_lookup(struct vop_cachedlookup_args *ap)
@@ -171,7 +170,6 @@ virtfs_open(struct vop_open_args *ap)
 	int error = 0;
 	struct virtfs_node *np = VTON(ap->a_vp);
 	struct p9_fid *fid = np->vfid;
-	struct p9_wstat *stat;
 	size_t filesize;
 	int mode;
 
@@ -182,13 +180,14 @@ virtfs_open(struct vop_open_args *ap)
 		return (0);
 	}
 
-	stat  = p9_client_stat(np->vfid);
+	// do we need to reload again ?
+	error = virtfs_reload_stats(ap->a_vp);
 	if (error != 0)
 		return (error);
 
 	/* According to 9p protocol, we cannot do Fileops on an already opened
 	 * file. So we have to clone a new fid by walking and then use the open fids
-	 * to do the open. 
+	 * to do the open.
 	 */
 	if (np->vofid == NULL) {
 
@@ -197,13 +196,13 @@ virtfs_open(struct vop_open_args *ap)
 		np->vofid = p9_client_walk(np->vfid,
 		     0, NULL, 1); /* Clone the fid here.*/
 		if (np->vofid == NULL) {
-			return (-ENOMEM);
+			return ENOMEM;
 		}
 	}
 	fid = np->vofid;
 	filesize = np->inode.i_size;
 	mode = virtfs_uflags_mode(ap->a_mode, 0);
-	
+
 	error = p9_client_open(fid, mode);
 	if (error == 0) {
 		np->v_opens = 1;
@@ -218,12 +217,12 @@ virtfs_close(struct vop_close_args *ap)
 {
 	struct virtfs_node *np = VTON(ap->a_vp);
 
-	p9_debug(VFS,"%s(fid %d ofid %d opens %d)\n", __func__,
-	    np->vfid->fid, np->vofid->fid, np->v_opens);
+	p9_debug(VFS,"%s(fid %d opens %d)\n", __func__,
+	    np->vfid->fid, np->v_opens);
 	np->v_opens--;
 	if (np->v_opens == 0) {
-		/* clean up */
-		//p9_fid_destroy(np->vofid);
+		/* clean up the open fid */
+		p9_client_clunk(np->vofid);
 		np->vofid = NULL;
 	}
 
@@ -407,33 +406,28 @@ virtfs_mode_to_generic(struct virtfs_session *ses, struct p9_wstat *stat)
 	int res;
 
 	res = virtfs_mode2perm(ses, stat);
-	printf("p9_mode_to_unix is not printing ..\n");
+
         if ((mode & P9PROTO_DMDIR) == P9PROTO_DMDIR)
 	{
                 res |= S_IFDIR;
-		printf("It should be a directory \n");
 	}
         else if (mode & P9PROTO_DMSYMLINK)
 	{
                 res |= S_IFLNK;
-		printf("IFLINK \n");
 	}
         else if (mode & P9PROTO_DMSOCKET)
 	{
                 res |= S_IFSOCK;
-		printf("SOCK\n");
 	}
         else if (mode & P9PROTO_DMNAMEDPIPE)
 	{
                 res |= S_IFIFO;
-		printf("PIPr \n");
 	}
         else
 	{
                 res |= S_IFREG;
-		printf(" I thin it hit here ..\n");
 	}
-	printf("end ..\n");
+
         return res;
 }
 
