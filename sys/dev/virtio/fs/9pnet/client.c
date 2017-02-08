@@ -43,20 +43,24 @@ p9_parse_opts(struct mount  *mp, struct p9_client *clnt)
 	char *trans;
 	int error = 0;
 
-	clnt->proto_version = p9_proto_2000u; /* Lets just do this for now*/
+	/* These are defaults for now */
+	clnt->proto_version = p9_proto_2000u;
 	clnt->msize = 8192;
 
     	trans = vfs_getopts(mp->mnt_optnew, "trans", &error);
     	if (error)
         	return (error);
 
-	/* This will be moved to mod where we can have multiple entries in the 
-	 * table to search for and return the correct pointer. For now its a 
-	 * global pointer only for the trans_virtio set */
-    	clnt->trans_mod = p9_get_trans_by_name(trans);
+	p9_debug(TRANS, " Attaching to the %s transport \n",trans);
+	/* 
+         * This will be moved to mod where we can have multiple entries in the 
+	 * table to search for and return the correct pointer. For now just get 
+         * the default virtio_ops.
+	 */
+    	clnt->trans_mod = p9_get_default_trans();
     	if (clnt->trans_mod == NULL) {
-            	printf("Could not find request transport: %s\n",trans);
-            	error = -EINVAL;
+            	p9_debug(TRANS, "Could not find request transport: %s\n",trans);
+            	error = EINVAL;
         }
 	return error;
 }
@@ -85,25 +89,21 @@ p9_buffer_free(struct p9_buffer *buf)
 }
 
 static void
-p9_free_req(struct p9_req_t *r)
+p9_free_req(struct p9_req_t *req)
 {
-	/* Creates its own pool later. */
-	if (r->tc)
-		p9_buffer_free(r->tc);
-	if (r->rc)
-		p9_buffer_free(r->rc);
+	if (req->tc)
+		p9_buffer_free(req->tc);
+	if (req->rc)
+		p9_buffer_free(req->rc);
 
-	free(r, M_P9REQ);
+	free(req, M_P9REQ);
 }
 
-
-/* This will be called for every request
- * We will do pool and stuff later.*/
 struct p9_req_t *
 p9_get_request(void)
 {
 	struct p9_req_t *req;
-	int alloc_msize = 8192;
+	int alloc_msize = MTU;
 
 	req = malloc(sizeof(*req), M_P9REQ, M_WAITOK | M_ZERO);
 	if (req == NULL) return NULL;
@@ -111,9 +111,9 @@ p9_get_request(void)
 		req->tc = p9_buffer_alloc(alloc_msize);
 	if (!req->rc) {
 		req->rc = p9_buffer_alloc(alloc_msize);
-	}	
+	}
 
-	if (req->tc == NULL || req->rc == NULL) 
+	if (req->tc == NULL || req->rc == NULL)
 		return NULL;
 	return req;
 }
@@ -187,7 +187,7 @@ p9_client_check_return(struct p9_client *c,
 	/* TODO: This supports only unix version 9p which is good for now*/
 	/* Find out the actual error .*/
         err = p9pdu_readf(req->rc, c->proto_version, "d", &ecode);
-        err = -ecode;
+        err = ecode;
 
         p9_debug(TRANS, "<<< RLERROR (%d)\n", -ecode);
 
@@ -203,21 +203,13 @@ static struct p9_req_t *p9_client_prepare_req(struct p9_client *c,
 
 	p9_debug(TRANS, "client %p op %d\n", c, type);
 
-	/* we allow for any status other than disconnected */
-	if (c->status == Disconnected)
-		return NULL;
-
-	/* if status is begin_disconnected we allow only clunk request */
-	if ((c->status == BeginDisconnect) && (type != P9PROTO_TCLUNK))
-		return NULL;
-
 	req = p9_get_request();
 	if (req == NULL)
 	{
 		return NULL;
 	}
 
-	/* marshall the data */
+	/* Marshall the data according to QEMU stds */
 	p9pdu_prepare(req->tc, type);
 	err = p9pdu_vwritef(req->tc, c->proto_version, fmt, ap);
 	if (err)
@@ -249,21 +241,15 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 	/* Call into the transport for submission. */
 	err = c->trans_mod->request(c, req);
 
-	if (err < 0) {
-		if (err == -EIO)
-			c->status = Disconnected;
+	if (err)
 		goto error;
-	}
 	/* Before we return the req (receive buffer and process it) 
          * we pre process the header to fill in the rc before calling
 	 * into the protocol infra to analyze the data.
 	 */
 	err = p9_client_check_return(c, req);	
-	if (err < 0) {
-		if (err == -EIO)
-			c->status = Disconnected;
+	if (err)
 		goto error;
-	}
 
 	if (!err)
 		return req;
@@ -272,34 +258,29 @@ error:
 	return NULL;
 }
 
-/* For the fid create, just use malloc for now.. 
- * we ll figure out a pool after POC */
-/* For every client_walk, start at the root node,and then do
- * a client walk till you find the node you are looking for.
- * similar to a lookup */
-struct p9_fid *p9_fid_create(struct p9_client *clnt)
+struct p9_fid *
+p9_fid_create(struct p9_client *clnt)
 {
 	struct p9_fid *fid;
 
 	p9_debug(TRANS, "clnt %p\n", clnt);
+
 	fid = malloc(sizeof(struct p9_fid), M_P9FID, M_WAITOK | M_ZERO);
 
 	if (!fid)
 		return NULL;
 
-	/* GET THE unique number from the pool for the file. */
 	fid->fid = alloc_unr(clnt->fidpool);
-
 	memset(&fid->qid, 0, sizeof(struct p9_qid));
 	fid->mode = -1;
 	fid->uid = 0;
 	fid->clnt = clnt;
-	fid->rdir = NULL;
 
 	return fid;
 }
 
-void p9_fid_destroy(struct p9_fid *fid)
+void
+p9_fid_destroy(struct p9_fid *fid)
 {
 	struct p9_client *clnt;
 
@@ -310,7 +291,6 @@ void p9_fid_destroy(struct p9_fid *fid)
 	free(fid, M_P9FID);
 }
 
-/* Send a request to the server to find the proto_version*/
 int p9_client_version(struct p9_client *c)
 {
 	int err = 0;
@@ -335,11 +315,11 @@ int p9_client_version(struct p9_client *c)
 					c->msize, "9P2000");
 		break;
 	default:
-		return -EINVAL;
+		return EINVAL;
 	}
 
 	if (req == NULL)
-		return -ENOMEM;
+		return ENOMEM;
 
 	err = p9pdu_readf(req->rc, c->proto_version, "ds", &msize, &version);
 	if (err) {
@@ -356,7 +336,7 @@ int p9_client_version(struct p9_client *c)
 	else if (!strncmp(version, "9P2000", 6))
 		c->proto_version = p9_proto_legacy;
 	else {
-		err = -ENOMEM;
+		err = ENOMEM;
 		goto error;
 	}
 
@@ -391,32 +371,24 @@ p9_client_create(struct mount *mp)
 	if (err < 0)
 		goto bail_out;
 
-	if (clnt->trans_mod == NULL)
-		clnt->trans_mod = p9_get_default_trans();
-
 	if (clnt->trans_mod == NULL) {
-		err = -EPROTONOSUPPORT;
-		p9_debug(TRANS,
-			 "No transport defined or default transport\n");
+		err = EINVAL;
+		p9_debug(TRANS, "No transport defined or default transport\n");
 		goto bail_out;
 	}
 
-	// Init the request_pool .
-	//allocator_pool_init(clnt);
-
 	clnt->fidpool = new_unrhdr(2, INT_MAX, NULL);
 	if (!(clnt->fidpool)) {
-		err = -ENOMEM;
+		err = ENOMEM;
 		goto bail_out;
 	}
 
 	p9_debug(TRANS, "clnt %p trans %p msize %d protocol %d\n",
 		 clnt, clnt->trans_mod, clnt->msize, clnt->proto_version);
 
-	/* For now avoiding any dev_names being passed from the mount */
 	err = clnt->trans_mod->create(clnt);
 	if (err) {
-		err = -ENOENT;
+		err = ENOENT;
 		goto bail_out;
 	}
 
@@ -424,31 +396,26 @@ p9_client_create(struct mount *mp)
         P9CLNT_INIT(clnt);
         /* Init the request lock for submission */
         P9REQ_INIT(clnt);
-	printf("Locks init done ..\n");
 
 	err = p9_client_version(clnt);
 	if (err)
 		goto bail_out;
 
-	printf("Client creation success .\n");
+	p9_debug(TRANS, "Client creation success .\n");
 
 	return clnt;
 
 bail_out:
-	if (err == -ENOENT)
-	clnt->trans_mod->close(clnt);
 	if (clnt)
 	free(clnt, M_TEMP);
 
 	return NULL;
 }
 
-void p9_client_destroy(struct p9_client *clnt)
+void
+p9_client_destroy(struct p9_client *clnt)
 {
 	p9_debug(TRANS, "clnt %p\n", clnt);
-
-	if (clnt->trans_mod)
-		clnt->trans_mod->close(clnt);
 
 	p9_put_trans(clnt->trans_mod);
 
@@ -457,31 +424,6 @@ void p9_client_destroy(struct p9_client *clnt)
 
         free(clnt ,M_TEMP);
 }
-
-void p9_client_disconnect(struct p9_client *clnt)
-{
-	p9_debug(TRANS, "clnt %p\n", clnt);
-	clnt->status = Disconnected;
-}
-
-void p9_client_begin_disconnect(struct p9_client *clnt)
-{
-	p9_debug(TRANS, "clnt %p\n", clnt);
-	clnt->status = BeginDisconnect;
-}
-
-
-/*
-struct p9_fid {
-        struct p9_client *clnt;
-        uint32_t fid;
-        int mode;
-        struct p9_qid qid;
-        uint32_t iounit;
-        uid_t uid;
-        void *rdir;
-}; */
-
 
 #if 0
 static 
@@ -498,9 +440,6 @@ void dump_fid(struct p9_fid *fid)
  */
 struct p9_fid *p9_client_attach(struct p9_client *clnt)
 {
-	/* OK there is big hole here ?  WE have to
-	 * use err somewher , otherise it doesnt make
-	  * much sense .. we should return that from here */
 	int err = 0;
 	struct p9_req_t *req;
 	struct p9_fid *fid = NULL;
@@ -511,14 +450,13 @@ struct p9_fid *p9_client_attach(struct p9_client *clnt)
 	p9_debug(TRANS, ">>> TATTACH \n");
 	fid = p9_fid_create(clnt);
 	if (fid == NULL) {
-		err = -ENOMEM;
+		err = ENOMEM;
 		fid = NULL;
 		goto error;
 	}
 	fid->uid = -1;
 	//dump_fid(fid);
 
-	/* Get uname from mount and stick it in this function. */
 	req = p9_client_request(clnt, P9PROTO_TATTACH, "ddssd", fid->fid,
 			P9PROTO_NOFID, uname, aname, fid->uid);
 
@@ -537,8 +475,8 @@ struct p9_fid *p9_client_attach(struct p9_client *clnt)
 		 qid.type, (unsigned long long)qid.path, qid.version);
 
 	memmove(&fid->qid, &qid, sizeof(struct p9_qid));
-
 	p9_free_req(req);
+
 	return fid;
 
 error:
@@ -577,15 +515,15 @@ error:
 }
 #endif
 
-/* 
+/*
  * When an extra fid has been created on the qemu and we found errors, we are going
  * to clunk the fid again and free the fid to return ENOENT (ex from lookup to reflect
  * that
  */
-int 
+int
 p9_client_clunk(struct p9_fid *fid)
 {
-        int err;
+        int err = 0;
         struct p9_client *clnt;
         struct p9_req_t *req;
 
@@ -633,7 +571,7 @@ struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 	if (clone) {
 		fid = p9_fid_create(clnt);
 		if (fid == NULL) {
-			err = -ENOMEM;
+			err = ENOMEM;
 			fid = NULL;
 			goto error;
 		}
@@ -651,7 +589,7 @@ struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 	req = p9_client_request(clnt, P9PROTO_TWALK, "ddT", oldfid->fid, fid->fid,
 								nwname, wnames);
 	if (req == NULL) {
-		err = -ENOMEM;
+		err = ENOMEM;
 		goto error;
 	}
 
@@ -665,7 +603,7 @@ struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 	p9_debug(TRANS, "<<< RWALK nwqid %d:\n", nwqids);
 
 	if (nwqids != nwname) {
-		err = -ENOENT;
+		err = ENOENT;
 		goto clunk_fid;
 	}
 
@@ -710,19 +648,19 @@ int p9_client_open(struct p9_fid *fid, int mode)
 	err = 0;
 
 	if (fid->mode != -1)
-		return -EINVAL;
+		return EINVAL;
 
 	if (p9_is_proto_dotl(clnt))
 		req = p9_client_request(clnt, P9PROTO_TLOPEN, "dd", fid->fid, mode);
 	else
 		req = p9_client_request(clnt, P9PROTO_TOPEN, "db", fid->fid, mode);
 	if (req == NULL) {
-		return -ENOMEM;
+		return ENOMEM;
 	}
 
 	err = p9pdu_readf(req->rc, clnt->proto_version, "Qd", &qid, &iounit);
 	if (err) {
-		err = -EINVAL;
+		err = EINVAL;
 		goto out;
 	}
 
@@ -737,12 +675,6 @@ int p9_client_open(struct p9_fid *fid, int mode)
 out:
 	p9_free_req(req);
 	return err;
-}
-
-int p9_client_close(struct p9_fid *fid)
-{
-	printf("%s: XXX not implemented\n", __func__);
-	return 0;
 }
 
 struct p9_wstat *p9_client_stat(struct p9_fid *fid)
@@ -823,7 +755,7 @@ int p9_client_wstat(struct p9_fid *fid, struct p9_wstat *wst)
 
 	req = p9_client_request(clnt, P9PROTO_TWSTAT, "dwS", fid->fid, wst->size+2, wst);
 	if (req == NULL) {
-		err = -ENOMEM;
+		err = ENOMEM;
 		goto error;
 	}
 
@@ -852,7 +784,7 @@ struct p9_stat_dotl *p9_client_getattr_dotl(struct p9_fid *fid,
 
 	req = p9_client_request(clnt, P9PROTO_TGETATTR, "dq", fid->fid, request_mask);
 	if (req ==  NULL) {
-		err =-ENOMEM;
+		err = ENOMEM;
 		goto error;
 	}
 
@@ -908,7 +840,7 @@ int p9_client_setattr(struct p9_fid *fid, struct p9_iattr_dotl *p9attr)
 	req = p9_client_request(clnt, P9PROTO_TSETATTR, "dI", fid->fid, p9attr);
 
 	if (req == NULL) {
-		err = -ENOMEM;
+		err = ENOMEM;
 		goto error;
 	}
 	p9_debug(TRANS, "<<< RSETATTR fid %d\n", fid->fid);
@@ -930,7 +862,7 @@ int p9_client_statfs(struct p9_fid *fid, struct p9_rstatfs *sb)
 
 	req = p9_client_request(clnt, P9PROTO_TSTATFS, "d", fid->fid);
 	if (req == NULL) {
-		err = -ENOMEM;
+		err = ENOMEM;
 		goto error;
 	}
 
@@ -971,7 +903,7 @@ p9_client_readdir(struct p9_fid *fid, char *data, uint64_t offset, uint32_t coun
 	req = p9_client_request(clnt, P9PROTO_TREADDIR, "dqd", fid->fid,
 			    offset, count);
 	if (req == NULL) {
-		err = -ENOMEM;
+		err = ENOMEM;
 		goto error;
 	}
 
@@ -1014,13 +946,10 @@ p9_client_read(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
         if (count < rsize)
 		rsize = count;
 
-	/* We have a limit of msize(8K) for buffers, we will be doing it in a 
-	 * loop to read more. 
-	 */
 	req = p9_client_request(clnt, P9PROTO_TREAD, "dqd", fid->fid, offset,
 				   rsize);
 	if (req == NULL) {
-		error = -ENOMEM;
+		error = ENOMEM;
 		goto error;
 	}
 
@@ -1039,7 +968,7 @@ p9_client_read(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 	p9_debug(TRANS, "<<< RREAD count %d\n", count);
 	if (!count) {
 		p9_free_req(req);
-		error = -EIO;
+		error = EIO;
 		goto error;
 	}
 
@@ -1055,7 +984,6 @@ error:
 	return error;	
 }
 
-#if 0
 int
 p9_client_write(struct p9_fid *fid, uint64_t64 offset, uint64_t count, char *data)
 {
@@ -1064,33 +992,36 @@ p9_client_write(struct p9_fid *fid, uint64_t64 offset, uint64_t count, char *dat
 	int total = 0;
 	*err = 0;
 
-	p9_debug(TRANS, ">>> TWRITE fid %d offset %llu count %zd\n",
-				fid->fid, (unsigned long long) offset,
-				iov_iter_count(from));
+	p9_debug(TRANS, ">>> TWRITE fid %d offset %llu \n",
+				fid->fid, (unsigned long long) offset);
 
-	while (iov_iter_count(from)) {
-		int count = iov_iter_count(from);
-
-		req = p9_client_rpc(clnt, P9_TWRITE, "dqV", fid->fid,
-						    offset, rsize, from);
-		if (req == NULL) {
-			*err = -ENOMEM;
-			break;
-		}
-
-		*err = p9pdu_readf(req->rc, clnt->proto_version, "d", &count);
-		if (*err) {
-			p9_free_req(clnt, req);
-			break;
-		}
-
-		p9_debug(TRANS, "<<< RWRITE count %d\n", count);
-
-		p9_free_req(clnt, req);
-		iov_iter_advance(from, count);
-		total += count;
-		offset += count;
+	req = p9_client_request(clnt, P9_TWRITE, "dqd", fid->fid,
+						    offset, count, data);
+	if (req == NULL) {
+		err = ENOMEM;
+		goto error;
 	}
-	return total;
+
+	err = p9pdu_readf(req->rc, clnt->proto_version, "d", &ret);
+	if (err) {
+		p9_free_req(clnt, req);
+		goto error;
+	}
+
+	p9_debug(TRANS, "<<< RWRITE count %d\n", ret);
+
+	if (count < ret) { // Wait ret returned higher ?
+              p9_debug(VFS," RWRITE count (%d > %d)\n", count, ret);
+	      ret = count;
+	}
+
+	if (!count) {
+		p9_free_req(req);
+		error = EIO;
+		goto error;
+	}
+
+	p9_free_req(clnt, req);
+
+	return ret;
 }
-#endif 

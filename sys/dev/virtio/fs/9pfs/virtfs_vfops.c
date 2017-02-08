@@ -32,7 +32,6 @@ __FBSDID("$FreeBSD$");
 #include "virtfs.h"
 
 static MALLOC_DEFINE(M_P9MNT, "virtfs_mount", "Mount structures for virtfs");
-////static MALLOC_DEFINE(M_P9NODE, "virtfs_node", "virtfs node structures");
 uma_zone_t virtfs_node_zone;
 
 void
@@ -54,8 +53,8 @@ dispose_node(struct virtfs_node **nodep)
 	p9_client_clunk(node->vfid);
 
 	if (!(vp->v_vflag & VV_ROOT))
-        	/* Free our associated memory */
-        	uma_zfree(virtfs_node_zone, node);
+		/* Free our associated memory */
+		uma_zfree(virtfs_node_zone, node);
 
         *nodep = NULL;
 }
@@ -236,7 +235,7 @@ int virtfs_vget_wrapper
 	if (virtfs_proto_dotl(p9s)) {
 		st = p9_client_getattr_dotl(fid, P9PROTO_STATS_BASIC);
         	if (st == NULL) {
-			error = -ENOMEM;
+			error = ENOMEM;
 			goto out;
 		}
 		/* copy back the qid into the p9node also,.*/
@@ -284,7 +283,7 @@ p9_mount(struct mount *mp)
 
 	fid = virtfs_init_session(mp);
 	if (fid == NULL) {
-		error = -ENOMEM;
+		error = ENOMEM;
 		goto out;
 	}
 	root->vfid = fid;

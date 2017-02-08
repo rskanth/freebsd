@@ -301,7 +301,7 @@ virtfs_reload_stats(struct vnode *vp)
 	st = p9_client_stat(node->vfid);
 
 	if (st == NULL) {
-		error = -ENOMEM;
+		error = ENOMEM;
 		goto out;
 	}
 
@@ -309,7 +309,6 @@ virtfs_reload_stats(struct vnode *vp)
 	/* Init the vnode with the disk info*/
 	virtfs_stat_vnode_u(st, vp);
 	free(st, M_TEMP);
-	
 out:
 	return error;
 }
@@ -539,9 +538,116 @@ virtfs_read(struct vop_read_args *ap)
 	return 0;
 }
 
+void
+virtfs_itimes(struct vnode *vp)
+{
+  	struct virtfs_node = VTON(vp);
+        inode = &node->virtfs_inode;
+
+	// THis is a local timestamp ?  check if it effects 
+        vfs_timestamp(&ts);     
+        inode->i_mtime = ts.tv_sec;
+        inode->i_mtime_nsec = ts.tv_nsec;
+        inode->i_ctime = ts.tv_sec;
+        inode->i_ctime_nsec = ts.tv_nsec;
+}
+
+#define DEF_BLOCKSIZE 4096 ///  4K block size
 static int
 virtfs_write(struct vop_write_args *ap)
 {
+	struct vnode *vp = ap->a_vp;
+        struct uio *uio = ap->a_uio;
+        struct virtfs_node *np = VTON(vp);
+	char *data = NULL;
+	uint64_t offset;
+	uint64_t ret;
+	uint64_t resid;
+	uint32_t count;
+	int error = 0;
+	uint64_t filesize;
+	struct p9_client *clnt = np->virtfs_ses->clnt;
+	
+
+   	vp = ap->a_vp;
+        uio = ap->a_uio;
+        ioflag = ap->a_ioflag;
+        node = VTON(vp);
+
+        p9_debug(VFS, "virtfss_write called %#zx at %#jx\n",
+            uio->uio_resid, (uintmax_t)uio->uio_offset);
+
+        if (uio->uio_offset < 0)
+                return (EINVAL);
+        if (uio->uio_resid == 0)
+                return (0);
+
+	filesize = np->inode.i_size;
+
+        switch (vp->v_type) {
+        case VREG:
+                if (ioflag & IO_APPEND)
+                        uio->uio_offset = file_size;
+                break;
+        case VDIR:
+                return (EISDIR);
+        case VLNK:
+                break;
+        default:
+                panic("%s: bad file type vp: %p", __func__, vp);
+        }
+
+        /* If explicitly asked to append, uio_offset can be wrong? */
+        if (ioflag & IO_APPEND)
+                uio->uio_offset = file_size;
+
+        resid = uio->uio_resid;
+        modified = error = 0;
+ 
+
+	/* whr in the file are we to start reading */
+	offset = uio->uio_offset;
+
+	printf("vnode ->vtype :%d \n",vp->v_type);
+	/* Allocate the a 8K buffer firsta 8K. We can only do 8K at a time */
+	data = malloc(clnt->msize, M_TEMP, M_WAITOK | M_ZERO);
+	if (data == NULL)
+		return EIO;
+
+	while ((resid = uio->uio_resid) > 0) {
+		count = MIN(DEF_BLOCKSIZE - uio->uio_offset, resid);
+		if (count == 0) // NOthing to write.
+			break;
+
+		memset(data, 0, clnt->msize); ///
+
+		// This guy takes care of the data write into the data buffer 
+		// from the uio.
+		error = uiomove(data, count, uio);
+		if (error) {
+			return error;
+		}
+	
+		/* Copy m_size bytes from the uio */
+		ret = p9_client_write(np->vofid, offset, count, data);
+		// Ret is the number of bytes written.
+		
+        }
+
+	// Update the fields in the node to reflect the change.
+	if (file_size < uio->uio_offset + uio->uio_resid) {
+		node->virtfs_inode.i_size = uio->uio_offset +
+			uio->uio_resid;
+		vnode_pager_setsize(vp, uio->uio_offset +
+			uio->uio_resid);
+
+		/* update the modified timers. */
+		virtfs_itimes(vp);
+        }
+
+	if (data)
+		free(data, M_TEMP);
+
 	return 0;
 }
 
@@ -680,7 +786,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 				&cde);
 
 			if (offset < 0)
-				return -EIO;
+				return EIO;
 
 			cde.d_reclen = GENERIC_DIRSIZ(&cde);
 			/*

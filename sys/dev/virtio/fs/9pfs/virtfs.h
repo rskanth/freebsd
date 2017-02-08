@@ -17,7 +17,7 @@ struct virtfs_session;
 struct virtfs_inode {
 
 	/* Make it simple first, Add more fields later */
-	uint16_t i_size;
+	uint64_t i_size;
         uint16_t i_type;
         uint32_t i_dev;
         uint32_t i_mode; 

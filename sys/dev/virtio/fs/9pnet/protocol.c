@@ -175,6 +175,7 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 						&stbuf->n_muid);
 				if (errcode)
 					p9stat_p9_free(stbuf);
+				printf("length of file :%lu\n",stbuf->length);  
 			}
 			break;
 		case 'D':{

@@ -2,7 +2,6 @@
 #ifndef NET_9P_CLIENT_H
 #define NET_9P_CLIENT_H
 
-#define MAX_ERRNO 30
 
 #include <sys/param.h>
 #include <sys/errno.h>
@@ -53,22 +52,18 @@ struct p9_req_t {
 };
 
 
+#define MAX_ERRNO 30
 struct p9_client {
-	struct mtx p9clnt_mtx; /* protect client structure */
-	struct mtx p9req_mtx; // REq mtx for now
+	struct mtx p9clnt_mtx;
+	struct mtx p9req_mtx;
 	struct cv req_cv;
 	unsigned int msize;
+#define MTU 8192
 	unsigned char proto_version;
 	struct p9_trans_module *trans_mod;
 	enum p9_trans_status status;
 	void *trans;
-
 	struct unrhdr *fidpool;
-	//TAILQ_HEAD(,p9_fid)  fidlist;
-
-	// malloc these requests and keep to use during fast path.
-	//TAILQ_HEAD (_,p9_req_t ) reqlist;
-
 	char name[32];
 };
 
@@ -80,29 +75,13 @@ struct p9_fid {
 	struct p9_qid qid;
 	uint32_t iounit;
 	uid_t uid;
-	void *rdir;
 };
 
-
-/* struct p9_dirent - directory entry structure
- * the directoy entry used for directory structures.
- * Make sure this is aligned with the dirent structure.	
- */
-
-struct p9_dirent {
-	struct p9_qid qid;
-	uint64_t d_off;
-	unsigned char d_type;
-	char d_name[256];
-};
-
-/* All the  function ops here are going to have p9_client*fileops  */
 /* Session and client Init Ops */
+
 struct p9_client *p9_client_create(struct mount *mp);
 void p9_client_destroy(struct p9_client *clnt);
 struct p9_fid *p9_client_attach(struct p9_client *clnt);
-int p9_client_detach(struct p9_fid *fid);
-
 
 /* FILE OPS - These are individually called from the specific vop function */
 
@@ -131,7 +110,6 @@ int p9_is_proto_dotu(struct p9_client *clnt);
 int p9_is_proto_dotl(struct p9_client *clnt);
 void p9_client_cb(struct p9_client *c, struct p9_req_t *req);
 int p9stat_read(struct p9_client *clnt, char *data, size_t len, struct p9_wstat *st); 
-struct p9_trans_module *v9fs_get_trans_by_name(char *s);
 
 extern int p9_debug_level; /* All debugs on now */
 
