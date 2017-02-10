@@ -391,6 +391,21 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 						 stbuf->extension, stbuf->n_uid,
 						 stbuf->n_gid, stbuf->n_muid);
 			} break;
+		case 'D':{
+				// WE dont need the return values , these are just values .
+				uint32_t count = va_arg(ap, uint32_t);
+				void *data = va_arg(ap, void *);
+				printf("Make sure we are hitting the D write .%d\n",count);
+
+				errcode = p9pdu_writef(pdu, proto_version,
+								"d", count);
+				// Count bytes of the blob into the pdu.
+				if (!errcode && pdu_write(pdu, data, count))
+					errcode = -EFAULT;
+	
+			}
+			break;
+	
 		case 'T':{
 				uint16_t nwname = va_arg(ap, int);
 				const char **wnames = va_arg(ap, const char **);

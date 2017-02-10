@@ -742,7 +742,7 @@ static int p9_client_statsize(struct p9_wstat *wst, int proto_version)
 	return ret;
 }
 
-// TODO: THis could break if we dont allocate wst, come back and fix for  l version.
+/* Write wstat. Called mostly by setattr*/
 int p9_client_wstat(struct p9_fid *fid, struct p9_wstat *wst)
 {
 	int err;
@@ -751,6 +751,7 @@ int p9_client_wstat(struct p9_fid *fid, struct p9_wstat *wst)
 
 	err = 0;
 	clnt = fid->clnt;
+	/*Computing the size as we have variable sized strings */
 	wst->size = p9_client_statsize(wst, clnt->proto_version);
 
 	req = p9_client_request(clnt, P9PROTO_TWSTAT, "dwS", fid->fid, wst->size+2, wst);
@@ -985,17 +986,17 @@ error:
 }
 
 int
-p9_client_write(struct p9_fid *fid, uint64_t64 offset, uint64_t count, char *data)
+p9_client_write(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 {
 	struct p9_client *clnt = fid->clnt;
 	struct p9_req_t *req;
-	int total = 0;
-	*err = 0;
+	int ret = 0;
+	int err = 0;
 
-	p9_debug(TRANS, ">>> TWRITE fid %d offset %llu \n",
-				fid->fid, (unsigned long long) offset);
+	p9_debug(TRANS, ">>> TWRITE fid %d offset %llu  %u\n",
+				fid->fid, (unsigned long long) offset, count);
 
-	req = p9_client_request(clnt, P9_TWRITE, "dqd", fid->fid,
+	req = p9_client_request(clnt, P9PROTO_TWRITE, "dqD", fid->fid,
 						    offset, count, data);
 	if (req == NULL) {
 		err = ENOMEM;
@@ -1004,7 +1005,7 @@ p9_client_write(struct p9_fid *fid, uint64_t64 offset, uint64_t count, char *dat
 
 	err = p9pdu_readf(req->rc, clnt->proto_version, "d", &ret);
 	if (err) {
-		p9_free_req(clnt, req);
+		p9_free_req(req);
 		goto error;
 	}
 
@@ -1017,11 +1018,15 @@ p9_client_write(struct p9_fid *fid, uint64_t64 offset, uint64_t count, char *dat
 
 	if (!count) {
 		p9_free_req(req);
-		error = EIO;
+		err = EIO;
 		goto error;
 	}
 
-	p9_free_req(clnt, req);
+	p9_free_req(req);
 
 	return ret;
+error:
+	if (req)
+		p9_free_req(req);
+	return err;
 }
