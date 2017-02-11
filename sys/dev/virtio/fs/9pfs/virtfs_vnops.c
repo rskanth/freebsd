@@ -24,7 +24,7 @@ __FBSDID("$FreeBSD$");
 #include <vm/vnode_pager.h>
 
 struct vop_vector virtfs_vnops;
-uint32_t unixmode2p9mode(uint32_t mode);
+uint32_t convert_to_p9_mode(uint32_t mode);
 
 static int
 virtfs_reclaim(struct vop_reclaim_args *ap)
@@ -58,7 +58,9 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 	struct virtfs_session *p9s = dnp->virtfs_ses;
 	struct mount *mp = p9s->virtfs_mount; /* Get the mount point */
 	struct p9_fid *newfid = NULL;
-	int error = 0;
+	int error = 0, nameiop, islastcn;
+	nameiop = cnp->cn_nameiop;
+	islastcn = cnp->cn_flags & ISLASTCN; 
 
 	*vpp = NULL;
 
@@ -88,48 +90,161 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 			/* Vget gets the vp for the newly created vnode. Stick it to the virtfs_node too*/
 			error = virtfs_vget_wrapper(mp, NULL, cnp->cn_lkflags, newfid, &vp);
 
+			if (error)
+				return error;
 			if (cnp->cn_flags & ISDOTDOT) {
 				vn_lock(dvp, ltype | LK_RETRY);
 				vdrop(dvp);
 			}
-		
-			if (error)
-				return error;
 
-		}
-		else {
-			/* Not found return NOENTRY.*/
-			error = ENOENT;
-		}
-		if (error == 0) {
 			*vpp = vp;
 			vref(*vpp);
 		}
 		else {
-			return error;
+			/* Not found return NOENTRY.*/
+			error = ENOENT;
+                        if ((nameiop == CREATE || nameiop == RENAME) &&
+                            islastcn) {
+                                error = VOP_ACCESS(dvp, VWRITE, cnp->cn_cred, cnp->cn_thread);
+                                if (!error) {
+                                        /* keep the component name */
+                                        cnp->cn_flags |= SAVENAME;
+                                        error = EJUSTRETURN;
+                                }
+                        }
 		}
 	}
 	/* Store the result the the cache if MAKEENTRY is specified in flags */
-	if ((cnp->cn_flags & MAKEENTRY) != 0 && cnp->cn_nameiop != CREATE)
+	if ((cnp->cn_flags & MAKEENTRY) != 0)
 		cache_enter(dvp, *vpp, cnp);	
 
 	return (error);
 }
 
-/* We ll implement this once mount works fine .*/
+static int
+create_wrapper(struct virtfs_node *dir_node, 
+	struct componentname *cnp, char *extension, uint32_t perm, uint8_t mode,
+	struct vnode **vpp)
+{
+        int err;
+        char *name = cnp->cn_nameptr;
+        struct p9_fid *ofid, *newfid;
+	struct virtfs_session *ses = dir_node->virtfs_ses;
+	struct mount *mp = ses->virtfs_mount; 
+
+        p9_debug(VFS, "name %pd\n", name);
+
+        err = 0;
+        ofid = NULL;
+        newfid = NULL;
+
+	/* Same way as open, we have to walk to create a clone and
+	 * use to open the dierctory.*/
+
+	if (dir_node->vofid == NULL) {
+
+		dir_node->vofid = p9_client_walk(dir_node->vfid,
+		     0, NULL, 1); /* Clone the fid here.*/
+		if (dir_node->vofid == NULL) {
+			err = ENOMEM;
+			goto out;
+		}
+	}
+	ofid = dir_node->vofid;
+
+        err = p9_client_file_create(ofid, name, perm, mode, extension);
+        if (err) {
+                p9_debug(VFS, "p9_client_fcreate failed %d\n", err);
+                goto out;
+        }
+	// Now do the lookup part and add the vnode, virtfs_node/
+
+	newfid = p9_client_walk(dir_node->vfid, 1, &name, 1);
+	if (newfid != NULL) {
+			err = virtfs_vget_wrapper(mp, NULL, cnp->cn_lkflags, newfid, vpp);
+			if (err)
+				goto out;
+	}
+	else {
+		/* Not found return NOENTRY.*/
+		err = ENOENT;
+		goto out;
+	}
+
+        if ((cnp->cn_flags & MAKEENTRY) != 0)
+                cache_enter(NTOV(dir_node), *vpp, cnp);
+    
+        p9_debug(VFS, "created file under vp %p node %p fid %d\n", *vpp, dir_node,
+            (uintmax_t)dir_node->vfid->fid);
+	// Clunk the open ofid.
+	if (ofid) {
+                p9_client_clunk(ofid);
+		dir_node->vofid = NULL;
+	}
+//	filesize = dir_node->inode.i_size + ; 
+	/* update the fields. */
+//	dir_node->inode.i_size = filesize;
+        //vnode_pager_setsize(dvp, filesize);
+
+        return 0;
+out:
+        if (ofid)
+                p9_client_clunk(ofid);
+
+        if (newfid)
+                p9_client_clunk(newfid);
+
+        return err;
+}
+
 static int
 virtfs_create(struct vop_create_args *ap)
 {
-	p9_debug(VOPS, "create");                      
-	
-	return 0;
+	struct vnode *dvp = ap->a_dvp;
+        struct vnode **vpp = ap->a_vpp;
+        struct componentname *cnp = ap->a_cnp;
+        uint16_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
+        struct virtfs_node *dir_node = VTON(dvp);
+	uint32_t perm;
+        int ret = 0;
+
+        p9_debug(VOPS, "%s: dvp %p\n", __func__, dvp);
+
+        perm = convert_to_p9_mode(mode);
+
+	/* This fid is the open for the new file. */
+        ret = create_wrapper(dir_node, cnp, NULL, perm, P9PROTO_ORDWR, vpp);
+                
+	return ret;
 }
+
+static int
+virtfs_mkdir(struct vop_mkdir_args *ap)
+{
+	struct vnode *dvp = ap->a_dvp;
+        struct vnode **vpp = ap->a_vpp;
+        struct componentname *cnp = ap->a_cnp;
+        uint16_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
+        struct virtfs_node *dir_node = VTON(dvp);
+	uint32_t perm;
+        int ret = 0;
+
+        p9_debug(VOPS, "%s: dvp %p\n", __func__, dvp);
+
+        perm = convert_to_p9_mode(mode | S_IFDIR);
+
+	/* This fid is the open for the new direcory. */
+        ret = create_wrapper(dir_node, cnp, NULL, perm, P9PROTO_ORDWR, vpp);
+                
+	return ret;
+}
+
 
 static int
 virtfs_mknod(struct vop_mknod_args *ap)
 {
-	p9_debug(VOPS, "mknod");                      
-	
+	p9_debug(VOPS, "mknod");
+
 	return 0;
 }
 
@@ -293,9 +408,7 @@ virtfs_access(struct vop_access_args *ap)
 
 	return error;
 }
-/* for now this is used in getattr. We can change the definition and call this from
- * 
- */
+
 int
 virtfs_reload_stats(struct vnode *vp)
 {
@@ -395,7 +508,7 @@ virtfs_mode2perm(struct virtfs_session *ses,
         int res = 0;
         int mode = stat->mode;
 
-	/* Get the correct params */
+	/* Get the correct perms */
 	res = mode & ALLPERMS;
 
 	if ((mode & P9PROTO_DMSETUID) == P9PROTO_DMSETUID)
@@ -409,7 +522,8 @@ virtfs_mode2perm(struct virtfs_session *ses,
         return res;
 }
 
-uint32_t unixmode2p9mode(uint32_t mode)
+uint32_t 
+convert_to_p9_mode(uint32_t mode)
 {
         int res;
         res = mode & 0777;
@@ -420,6 +534,7 @@ uint32_t unixmode2p9mode(uint32_t mode)
         if (S_ISFIFO(mode))
 		res |= P9PROTO_DMNAMEDPIPE;
 
+	// Is the reason for the red file ?
         if ((mode & S_ISUID) == S_ISUID)
                res |= P9PROTO_DMSETUID;
         if ((mode & S_ISGID) == S_ISGID)
@@ -428,6 +543,7 @@ uint32_t unixmode2p9mode(uint32_t mode)
                 res |= P9PROTO_DMSETVTX;
         return res;
 }
+
 static int 
 virtfs_mode_to_generic(struct virtfs_session *ses, struct p9_wstat *stat)
 {
@@ -451,7 +567,6 @@ virtfs_mode_to_generic(struct virtfs_session *ses, struct p9_wstat *stat)
 }
 
 /* The u version*/
-/* Dont forget to initialize vnode*/
 int
 virtfs_stat_vnode_u(struct p9_wstat *stat, struct vnode *vp)
 {
@@ -484,16 +599,6 @@ virtfs_stat_vnode_u(struct p9_wstat *stat, struct vnode *vp)
 	return 0;
 }
 
-/* The linux version */
-int
-virtfs_stat_vnode_l(void)
-//struct p9_stat_dotl *stat, struct vnode *vp)
-{
-	return 0;
-}
-
-
-// Finish this up.
 static int
 virtfs_setattr(struct vop_setattr_args *ap)
 {
@@ -506,12 +611,13 @@ virtfs_setattr(struct vop_setattr_args *ap)
         memset(&wstat, 0, sizeof(struct p9_wstat));
 
 	/* Set up the wstat structure to write to the disk */
-	wstat.mode = unixmode2p9mode(vap->va_mode);
+	wstat.mode = convert_to_p9_mode(vap->va_mode);
         wstat.mtime = vap->va_mtime.tv_sec;
         wstat.atime = vap->va_atime.tv_sec;
         wstat.length = vap->va_size;
-        wstat.n_uid = vap->va_uid;
-        wstat.n_gid = vap->va_gid;
+	// Avoid this for now to avoid the red ?
+        //wstat.n_uid = vap->va_uid;
+        //wstat.n_gid = vap->va_gid;
 
         error = p9_client_wstat(node->vfid, &wstat);
         if (error < 0)
@@ -596,12 +702,10 @@ virtfs_itimes(struct vnode *vp)
 	struct timespec ts;
         struct virtfs_inode *inode = &node->inode;
 
-	// This is a local timestamp ?  check if it effects 
         vfs_timestamp(&ts);
         inode->i_mtime = ts.tv_sec;
 }
 
-#define DEF_BLOCKSIZE 4096 ///  4K block size
 static int
 virtfs_write(struct vop_write_args *ap)
 {
@@ -724,12 +828,6 @@ virtfs_rename(struct vop_rename_args *ap)
 }
 
 static int
-virtfs_mkdir(struct vop_mkdir_args *ap)
-{
-	return 0;
-}
-
-static int
 virtfs_rmdir(struct vop_rmdir_args *ap)
 {
 	return 0;
@@ -741,22 +839,6 @@ virtfs_symlink(struct vop_symlink_args *ap)
 	return 0;
 }
 
-#if 0
-static int
-dt_type(struct p9_wstat *stat)
-{               
-        unsigned long perm = stat->mode;
-        int rettype = DT_REG; 
-                                          
-        if (perm & P9PROTO_DMDIR)
-                rettype = DT_DIR;
-        if (perm & P9PROTO_DMSYMLINK)
-                rettype = DT_LNK;
-                        
-        return rettype;
-}
-
-#endif
 static void 
 dump_p9dirent(struct dirent *p)
 {

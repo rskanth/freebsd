@@ -242,7 +242,7 @@ int virtfs_vget_wrapper
 		memcpy(&virtfs_node->vqid, &st->qid, sizeof(st->qid));
 
 		/* Init the vnode with the disk info*/
-                virtfs_stat_vnode_l();
+                //virtfs_stat_vnode_l();
 		/* There needs to be quite a few changes to M_TEMPS to have
 		pools for each structure */
                 free(st, M_TEMP);

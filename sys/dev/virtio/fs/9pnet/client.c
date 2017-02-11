@@ -996,6 +996,8 @@ p9_client_write(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 	p9_debug(TRANS, ">>> TWRITE fid %d offset %llu  %u\n",
 				fid->fid, (unsigned long long) offset, count);
 
+	/* Doing the Data blob instead. If at all we add the zc, we can change it
+	 * to uio direct copy.*/
 	req = p9_client_request(clnt, P9PROTO_TWRITE, "dqD", fid->fid,
 						    offset, count, data);
 	if (req == NULL) {
@@ -1005,7 +1007,6 @@ p9_client_write(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 
 	err = p9pdu_readf(req->rc, clnt->proto_version, "d", &ret);
 	if (err) {
-		p9_free_req(req);
 		goto error;
 	}
 
@@ -1017,7 +1018,6 @@ p9_client_write(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 	}
 
 	if (!count) {
-		p9_free_req(req);
 		err = EIO;
 		goto error;
 	}
@@ -1029,4 +1029,48 @@ error:
 	if (req)
 		p9_free_req(req);
 	return err;
+}
+
+int 
+p9_client_file_create(struct p9_fid *fid, char *name, uint32_t perm, int mode,
+                     char *extension)
+{
+        int err;
+        struct p9_client *clnt;
+        struct p9_req_t *req;
+        struct p9_qid qid;
+	int iounit;
+
+        p9_debug(TRANS, ">>> TCREATE fid %d name %s perm %d mode %d\n",
+                                                fid->fid, name, perm, mode);
+        err = 0;
+        clnt = fid->clnt;
+
+        if (fid->mode != -1)
+                return EINVAL;
+
+        req = p9_client_request(clnt, P9PROTO_TCREATE, "dsdb?s", fid->fid, name, perm,            
+                                mode, extension);
+	if (req == NULL) {
+		err = ENOMEM;
+		goto error;
+	}
+
+        err = p9pdu_readf(req->rc, clnt->proto_version, "Qd", &qid, &iounit);            
+
+	if (err)
+		goto error;
+
+        p9_debug(TRANS, "<<< RCREATE qid %x.%llx.%x iounit %x\n",
+                                qid.type,
+                                (unsigned long long)qid.path,
+                                qid.version, iounit);
+        fid->mode = mode;
+        fid->iounit = iounit;
+
+error:
+	if (req)
+        	p9_free_req(req);
+
+        return err;
 }
