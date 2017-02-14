@@ -49,9 +49,6 @@ dispose_node(struct virtfs_node **nodep)
         vp = NTOV(node);
         vp->v_data = NULL;
 
-	// Clean up the fids before we give it back to the pool.
-	p9_client_clunk(node->vfid);
-
 	if (!(vp->v_vflag & VV_ROOT))
 		/* Free our associated memory */
 		uma_zfree(virtfs_node_zone, node);

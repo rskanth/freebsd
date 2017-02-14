@@ -485,8 +485,7 @@ error:
 	return NULL;
 }
 
-#if 0
-static int
+int
 p9_client_remove(struct p9_fid *fid)
 {
 	int err;
@@ -513,7 +512,6 @@ error:
 		p9_fid_destroy(fid);
 	return err;
 }
-#endif
 
 /*
  * When an extra fid has been created on the qemu and we found errors, we are going

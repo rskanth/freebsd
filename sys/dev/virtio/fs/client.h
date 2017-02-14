@@ -100,6 +100,7 @@ int p9_client_read(struct p9_fid *fid, uint64_t offset, uint32_t count, char *da
 int p9_client_write(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data);
 int p9_client_file_create(struct p9_fid *fid, char *name, uint32_t perm, int mode,
                      char *extension);
+int p9_client_remove(struct p9_fid *fid);
 
 int p9dirent_read(struct p9_client *clnt, char *buf, int start, int len,
 		  struct dirent *dirent);
