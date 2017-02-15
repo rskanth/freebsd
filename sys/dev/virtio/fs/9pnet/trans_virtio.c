@@ -67,7 +67,6 @@ vt9p_request(struct p9_client *client, struct p9_req_t *req)
 
 	/* Grab the channel lock*/
 	VT9P_LOCK(chan);
-	req->status = REQ_STATUS_SENT;
 
 	sglist_reset(sg);
 	/* Handle out VirtIO ring buffers */
@@ -85,11 +84,11 @@ vt9p_request(struct p9_client *client, struct p9_req_t *req)
 	}
 	writable = sg->sg_nseg - readable;
 	
-	virtqueue_dump(vq);
+	//virtqueue_dump(vq);
 req_retry:
 	err = virtqueue_enqueue(vq, req, sg, readable, writable);
 
-	virtqueue_dump(vq);
+	//virtqueue_dump(vq);
 
 	if (err < 0) {
 		if (err == ENOSPC) {
@@ -110,7 +109,7 @@ req_retry:
 	 	msleep(chan, VT9P_MTX(chan), 0, "chan lock", 0);
         VT9P_UNLOCK(chan);
 
-	virtqueue_dump(vq);
+	//virtqueue_dump(vq);
 	p9_debug(TRANS, "virtio request kicked\n");
 	return 0;
 }

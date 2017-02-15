@@ -1,4 +1,3 @@
-
 #ifndef NET_9P_CLIENT_H
 #define NET_9P_CLIENT_H
 
@@ -26,13 +25,7 @@ enum p9_proto_versions{
 	p9_proto_2000L,
 };
 
-enum p9_trans_status {
-	Connected,
-	BeginDisconnect,
-	Disconnected,
-	Hung,
-};
-
+/* Dunno if this is needeed ? */
 enum p9_req_status_t {
 	REQ_STATUS_IDLE,
 	REQ_STATUS_ALLOC,
@@ -44,13 +37,9 @@ enum p9_req_status_t {
 };
 
 struct p9_req_t {
-	int status;
-	int t_err;
 	struct p9_buffer *tc;
 	struct p9_buffer *rc;
-	void *aux;
 };
-
 
 #define MAX_ERRNO 30
 struct p9_client {
@@ -61,7 +50,6 @@ struct p9_client {
 #define MTU 8192
 	unsigned char proto_version;
 	struct p9_trans_module *trans_mod;
-	enum p9_trans_status status;
 	void *trans;
 	struct unrhdr *fidpool;
 	char name[32];
@@ -71,10 +59,10 @@ struct p9_client {
 struct p9_fid {
 	struct p9_client *clnt;
 	uint32_t fid;
-	int mode;
+	int mode;        // Open file mode.
 	struct p9_qid qid;
 	uint32_t iounit;
-	uid_t uid;
+	uid_t uid;      // this is the uid for this fid.
 };
 
 /* Session and client Init Ops */
@@ -93,7 +81,6 @@ struct p9_fid *p9_fid_create(struct p9_client *clnt);
 void p9_fid_destroy(struct p9_fid *fid);
 int p9_client_clunk(struct p9_fid *fid);
 
-int p9_client_statfs(struct p9_fid *fid, struct p9_rstatfs *sb);
 int p9_client_version(struct p9_client *clnt);
 int p9_client_readdir(struct p9_fid *fid, char *data, uint64_t offset, uint32_t count);
 int p9_client_read(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data);

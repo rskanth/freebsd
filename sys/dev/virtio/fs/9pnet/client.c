@@ -118,6 +118,7 @@ p9_get_request(void)
 	return req;
 }
 
+#if 0
 static void
 dump_pdu(struct p9_buffer *buf)
 {
@@ -131,6 +132,7 @@ dump_pdu(struct p9_buffer *buf)
 	for(i=0;i<30;i++)
 		printf("%hhu ",tbuf[i]);
 }
+#endif
 
 static int
 p9_parse_receive(struct p9_buffer *buf)
@@ -145,7 +147,7 @@ p9_parse_receive(struct p9_buffer *buf)
 	/* This value is set by QEMU for the header.*/
         if (buf->size == 0) buf->size = 7;
 
-	dump_pdu(buf);
+	//dump_pdu(buf);
 
 	/* This is the initial header parse. size, type, and tag .*/
         err = p9pdu_readf(buf, 0, "dbw", &size, &type, &tag);
@@ -170,7 +172,7 @@ p9_client_check_return(struct p9_client *c,
         int err;
         int ecode;
 
-	dump_pdu(req->tc);
+	//dump_pdu(req->tc);
 	/* Check what we have in the receive bufer .*/
         err = p9_parse_receive(req->rc);
 
@@ -848,42 +850,6 @@ error:
 	return err;
 }
 
-int p9_client_statfs(struct p9_fid *fid, struct p9_rstatfs *sb)
-{
-	int err;
-	struct p9_req_t *req;
-	struct p9_client *clnt;
-
-	err = 0;
-	clnt = fid->clnt;
-
-	p9_debug(TRANS, ">>> TSTATFS fid %d\n", fid->fid);
-
-	req = p9_client_request(clnt, P9PROTO_TSTATFS, "d", fid->fid);
-	if (req == NULL) {
-		err = ENOMEM;
-		goto error;
-	}
-
-	err = p9pdu_readf(req->rc, clnt->proto_version, "ddqqqqqqd", &sb->type,
-		&sb->bsize, &sb->blocks, &sb->bfree, &sb->bavail,
-		&sb->files, &sb->ffree, &sb->fsid, &sb->namelen);
-	if (err) {
-		p9_free_req(req);
-		goto error;
-	}
-
-	p9_debug(TRANS, "<<< RSTATFS fid %d type 0x%lx bsize %ld "
-		"blocks %lu bfree %lu bavail %lu files %lu ffree %lu "
-		"fsid %lu namelen %ld\n",
-		fid->fid, (long unsigned int)sb->type, (long int)sb->bsize,
-		sb->blocks, sb->bfree, sb->bavail, sb->files,  sb->ffree,
-		sb->fsid, (long int)sb->namelen);
-
-	p9_free_req(req);
-error:
-	return err;
-}
 /* Only support for readdir for now .*/ 
 int 
 p9_client_readdir(struct p9_fid *fid, char *data, uint64_t offset, uint32_t count)
@@ -924,7 +890,7 @@ free_and_error:
 error:
 	return err;
 }
-#define P9_IOHDRSZ 24
+
 int
 p9_client_read(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 {
@@ -937,14 +903,14 @@ p9_client_read(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 	p9_debug(TRANS, ">>> TREAD fid %d offset %llu %u\n",
 		   fid->fid, (unsigned long long) offset, count);
 
-	// This shouldnt matter as we are sending only for count if its lesser.
 	rsize = fid->iounit;
-        if (!rsize || rsize > clnt->msize-P9_IOHDRSZ)
-                  rsize = clnt->msize - P9_IOHDRSZ;
+        if (!rsize || rsize > clnt->msize)
+                  rsize = clnt->msize;
 
         if (count < rsize)
 		rsize = count;
 
+	/* At this stage, we only have 8K buffers so only transfer */
 	req = p9_client_request(clnt, P9PROTO_TREAD, "dqd", fid->fid, offset,
 				   rsize);
 	if (req == NULL) {
@@ -990,9 +956,22 @@ p9_client_write(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 	struct p9_req_t *req;
 	int ret = 0;
 	int err = 0;
+	int rsize;
 
 	p9_debug(TRANS, ">>> TWRITE fid %d offset %llu  %u\n",
 				fid->fid, (unsigned long long) offset, count);
+
+	p9_debug(TRANS, ">>> TREAD fid %d offset %llu %u\n",
+		   fid->fid, (unsigned long long) offset, count);
+
+	rsize = fid->iounit;
+        if (!rsize || rsize > clnt->msize)
+                  rsize = clnt->msize;
+
+	/* Limit set by Qemu ,8168 */
+	if (count > rsize) {
+		count = rsize;
+	}
 
 	/* Doing the Data blob instead. If at all we add the zc, we can change it
 	 * to uio direct copy.*/
@@ -1005,13 +984,14 @@ p9_client_write(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 
 	err = p9pdu_readf(req->rc, clnt->proto_version, "d", &ret);
 	if (err) {
+		p9_debug(TRANS, "Something went wrong in the write\n");
 		goto error;
 	}
 
 	p9_debug(TRANS, "<<< RWRITE count %d\n", ret);
 
 	if (count < ret) { // Wait ret returned higher ?
-              p9_debug(VFS," RWRITE count (%d > %d)\n", count, ret);
+              p9_debug(VFS," RWRITE count BUG(%d > %d)\n", count, ret);
 	      ret = count;
 	}
 

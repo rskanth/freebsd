@@ -48,11 +48,9 @@ virtfs_reclaim(struct vop_reclaim_args *ap)
         struct vnode *vp = ap->a_vp;
         struct virtfs_node *virtfs_node = VTON(vp);
 
+        p9_debug(VOPS, "%s: vp:%p node:%p\n", __func__, vp, virtfs_node);
 	if (virtfs_node == NULL) return 0;
 
-        p9_debug(VOPS, "%s: vp:%p node:%p\n", __func__, vp, virtfs_node);
-
-	// Clean up the fids before we give it back to the pool.
 	if (virtfs_node->vfid)
 		p9_client_clunk(virtfs_node->vfid);
 
@@ -145,7 +143,7 @@ create_wrapper(struct virtfs_node *dir_node,
 	struct virtfs_session *ses = dir_node->virtfs_ses;
 	struct mount *mp = ses->virtfs_mount; 
 
-        p9_debug(VFS, "name %pd\n", name);
+        p9_debug(VOPS, "name %pd\n", name);
 
         err = 0;
         ofid = NULL;
@@ -167,7 +165,7 @@ create_wrapper(struct virtfs_node *dir_node,
 
         err = p9_client_file_create(ofid, name, perm, mode, extension);
         if (err) {
-                p9_debug(VFS, "p9_client_fcreate failed %d\n", err);
+                p9_debug(VOPS, "p9_client_fcreate failed %d\n", err);
                 goto out;
         }
 	
@@ -191,7 +189,7 @@ create_wrapper(struct virtfs_node *dir_node,
         if ((cnp->cn_flags & MAKEENTRY) != 0)
                 cache_enter(NTOV(dir_node), *vpp, cnp);
     
-        p9_debug(VFS, "created file under vp %p node %p fid %d\n", *vpp, dir_node,
+        p9_debug(VOPS, "created file under vp %p node %p fid %d\n", *vpp, dir_node,
             (uintmax_t)dir_node->vfid->fid);
 	// Clunk the open ofid.
 	if (ofid) {
@@ -352,7 +350,7 @@ virtfs_close(struct vop_close_args *ap)
 		return 0;
 	}
 
-	p9_debug(VFS,"%s(fid %d opens %d)\n", __func__,
+	p9_debug(VOPS,"%s(fid %d opens %d)\n", __func__,
 	    np->vfid->fid, np->v_opens);
 	np->v_opens--;
 	if (np->v_opens == 0) {
@@ -406,7 +404,7 @@ virtfs_access(struct vop_access_args *ap)
         struct vattr vap;
         int error;
 
-        p9_debug(VOPS,"virtfs_access");
+        p9_debug(VOPS,"virtfs_access \n");
 
 	/* make sure getattr is working correctly and is defined.*/
         error = VOP_GETATTR(vp, &vap, NULL);
@@ -417,7 +415,7 @@ virtfs_access(struct vop_access_args *ap)
         if (error)
                 return (error);
 
-	/* Call the Generic Access check in VFS*/
+	/* Call the Generic Access check in VOPS*/
         error = vaccess(vp->v_type, vap.va_mode, vap.va_uid, vap.va_gid, accmode,
             cred, NULL);
 
@@ -655,7 +653,7 @@ virtfs_read(struct vop_read_args *ap)
 	int error = 0;
 	uint64_t filesize;
 	struct p9_client *clnt = np->virtfs_ses->clnt;
-	
+
 	if (vp->v_type == VCHR || vp->v_type == VBLK)
                 return (EOPNOTSUPP);
 
@@ -673,7 +671,7 @@ virtfs_read(struct vop_read_args *ap)
 	if(uio->uio_offset >= filesize)
 		return 0;
 
-	 p9_debug(VFS, "virtfs_read called %lu at %lu\n",
+	 p9_debug(VOPS, "virtfs_read called %lu at %lu\n",
             uio->uio_resid, (uintmax_t)uio->uio_offset);
 
 	/* Allocate the a 8K buffer firsta 8K. We can only do 8K at a time */
@@ -698,6 +696,7 @@ virtfs_read(struct vop_read_args *ap)
 		if (error) {
 			return error;
 		}
+
 		offset += ret;
         }
 	uio->uio_offset = offset;
@@ -730,7 +729,7 @@ virtfs_write(struct vop_write_args *ap)
 	uint64_t ret;
 	uint64_t resid;
 	uint32_t count;
-	int error = 0, ioflag;
+	int error = 0, ioflag, iounit;
 	uint64_t file_size;
 	struct p9_client *clnt = node->virtfs_ses->clnt;
 
@@ -739,7 +738,7 @@ virtfs_write(struct vop_write_args *ap)
         ioflag = ap->a_ioflag;
         node = VTON(vp);
 
-        p9_debug(VFS, "virtfs_write called %#zx at %#jx\n",
+        p9_debug(VOPS, "virtfs_write called %#zx at %#jx\n",
             uio->uio_resid, (uintmax_t)uio->uio_offset);
 
         if (uio->uio_offset < 0)
@@ -777,11 +776,22 @@ virtfs_write(struct vop_write_args *ap)
 	if (data == NULL)
 		return EIO;
 
+	/* Even though we have a 8k buffer, Qemu is typically doing 8168
+	 * because of a HDR of 24. Use that amount for transfers so that we dont
+	 * drop anything.
+	 */
+
+	if (node->vofid->iounit == 0) {
+		iounit = 8168; // msize- 24;
+	} else {
+		iounit = node->vofid->iounit;
+	}
+
 	while ((resid = uio->uio_resid) > 0) {
 
 		memset(data, 0, clnt->msize);
 
-		count = MIN(resid, clnt->msize);
+		count = MIN(resid, iounit);
 		error = uiomove(data, count, uio);
 		if (error) {
 			return error;
@@ -918,11 +928,6 @@ virtfs_readdir(struct vop_readdir_args *ap)
         p9_debug(VOPS, "virtfs_readdir filesize %jd resid %zd\n",
 	   (uintmax_t)file_size, uio->uio_resid);
 
-
-	/* Go to QEMU to fetch stuff and make sense out of it. */
-	/* Our version of the readdir through the virtio. The data buf has the
-	 * data block information. Now parse through the buf and make the dirent.
-	 */
 
 	/* Allocate the a 8K buffer firsta 8K. We can only do 8K at a time */
 	data = malloc(clnt->msize, M_TEMP, M_WAITOK | M_ZERO);

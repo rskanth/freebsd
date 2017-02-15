@@ -150,7 +150,7 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				errcode = p9pdu_readf(pdu, proto_version, "bdq",
 						      &qid->type, &qid->version,
 						      &qid->path);
-				printf("done with legit Q read ..\n");
+				//printf("done with legit Q read ..\n");
 			}
 			break;
 		case 'S':{
@@ -175,7 +175,7 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 						&stbuf->n_muid);
 				if (errcode)
 					p9stat_p9_free(stbuf);
-				printf("length of file :%lu\n",stbuf->length);  
+				//printf("length of file :%lu\n",stbuf->length);  
 			}
 			break;
 		case 'D':{
@@ -322,9 +322,9 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				int8_t val = va_arg(ap, int);
 				if (pdu_write(pdu, &val, sizeof(val)))
 					errcode = -EFAULT;
-				printf("DId b %u \n",val);
-				printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
-				printf("bit mapint values%hhu \n",pdu->sdata[4]);
+				//printf("DId b %u \n",val);
+				//printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
+				//printf("bit mapint values%hhu \n",pdu->sdata[4]);
 	
 			}
 			break;
@@ -336,12 +336,12 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 			break;
 		case 'd':{
 				int32_t val = va_arg(ap, int32_t);
-				printf("before conversion :%d %d\n",val,pdu->size);
+				//printf("before conversion :%d %d\n",val,pdu->size);
 				if (pdu_write(pdu, &val, sizeof(val)))
 					errcode = -EFAULT;
-					printf("DId  %d\n",val);
-					printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
-					printf("int values%d %d \n",pdu->sdata[0],pdu->sdata[5]);
+					//printf("DId  %d\n",val);
+					//printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
+					//printf("int values%d %d \n",pdu->sdata[0],pdu->sdata[5]);
 				
 			}
 			break;
@@ -359,13 +359,13 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 
 				errcode = p9pdu_writef(pdu, proto_version,
 								"w", len);
-				printf("DId %s \n",sptr);
-				printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
+				//printf("DId %s \n",sptr);
+				//printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
 
 				if (!errcode && pdu_write(pdu, sptr, len))
 					errcode = -EFAULT;
 
-				printf("strng %hhu %hhu %s  \n",pdu->sdata[9],pdu->sdata[10],&pdu->sdata[11]);
+				//printf("strng %hhu %hhu %s  \n",pdu->sdata[9],pdu->sdata[10],&pdu->sdata[11]);
 			}
 			break;
 		case 'Q':{
@@ -395,7 +395,7 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				// WE dont need the return values , these are just values .
 				uint32_t count = va_arg(ap, uint32_t);
 				void *data = va_arg(ap, void *);
-				printf("Make sure we are hitting the D write .%d\n",count);
+				//printf("Make sure we are hitting the D write .%d\n",count);
 
 				errcode = p9pdu_writef(pdu, proto_version,
 								"d", count);
@@ -529,7 +529,7 @@ int p9pdu_prepare(struct p9_buffer *pdu, int8_t type)
 {
 	int tag = 0;
 	pdu->id = type;
-	printf("p9pdu_prepare ID%d \n",pdu->id);
+	//printf("p9pdu_prepare ID%d \n",pdu->id);
 
 	return p9pdu_writef(pdu, 0, "dbw", 0, type, tag);
 }
@@ -586,6 +586,6 @@ int p9dirent_read(struct p9_client *clnt, char *buf, int start, int len,
 	dirent->d_fileno = (uint32_t)(qid.path >> 32);
 
 out:
-	printf("fake_pdu.offset :%d %hu\n",fake_pdu.offset,le);
+	//printf("fake_pdu.offset :%d %hu\n",fake_pdu.offset,le);
 	return fake_pdu.offset;
 }

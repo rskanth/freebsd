@@ -7,7 +7,7 @@
 
 #include <sys/types.h>
 
-enum p9_msg_t {
+enum p9_cmds_t {
 	P9PROTO_TLERROR = 6,
 	P9PROTO_RLERROR,
 	P9PROTO_TSTATFS = 8,
@@ -78,6 +78,7 @@ enum p9_msg_t {
 	P9PROTO_RWSTAT,
 };
 
+/* File Open Modes */
 enum p9_open_mode_t {
 	P9PROTO_OREAD = 0x00,
 	P9PROTO_OWRITE = 0x01,
@@ -90,6 +91,7 @@ enum p9_open_mode_t {
 	P9PROTO_OEXCL = 0x1000,
 };
 
+/* FIle Permissions */
 enum p9_perm_t {
 	P9PROTO_DMDIR = 0x80000000,
 	P9PROTO_DMAPPEND = 0x40000000,
@@ -97,7 +99,6 @@ enum p9_perm_t {
 	P9PROTO_DMMOUNT = 0x10000000,
 	P9PROTO_DMAUTH = 0x08000000,
 	P9PROTO_DMTMP = 0x04000000,
-/* P92000.u extensions */
 	P9PROTO_DMSYMLINK = 0x02000000,
 	P9PROTO_DMLINK = 0x01000000,
 	P9PROTO_DMDEVICE = 0x00800000,
@@ -108,7 +109,7 @@ enum p9_perm_t {
 	P9PROTO_DMSETVTX = 0x00010000,
 };
 
-/* 9p2000.L open flags */
+/* 9p2000.L open flags. Not Yet used */
 #define P9PROTO_DOTL_RDONLY        00000000
 #define P9PROTO_DOTL_WRONLY        00000001
 #define P9PROTO_DOTL_RDWR          00000002
@@ -150,10 +151,9 @@ enum p9_qid_t {
 };
 
 /* P9 Magic Numbers */
-#define P9PROTO_NOTAG	(uint16_t)(~0)
 #define P9PROTO_NOFID	(uint32_t)(~0)
-#define P9PROTO_MAXWELEM	16
 
+/* Exchange unit between Qemu and Client */
 struct p9_qid {
 	uint8_t type;
 	uint32_t version;
@@ -180,6 +180,7 @@ struct p9_wstat {
 	uid_t n_muid;		/* 9p2000.u extensions */
 };
 
+/* The linux version */
 struct p9_stat_dotl {
 	uint64_t st_result_mask;
 	struct p9_qid qid;
@@ -234,34 +235,14 @@ struct p9_iattr_dotl {
 	uint64_t mtime_nsec;
 };
 
-
-struct p9_rstatfs {
-	uint32_t type;
-	uint32_t bsize;
-	uint64_t blocks;
-	uint64_t bfree;
-	uint64_t bavail;
-	uint64_t files;
-	uint64_t ffree;
-	uint64_t fsid;
-	uint32_t namelen;
-};
-
+/* PDU buffer used for SG lists. */
 struct p9_buffer {
 	uint32_t size;
-	uint8_t id;
 	uint16_t tag;
-
+	uint8_t id;
 	size_t offset;
 	size_t capacity;
-
 	uint8_t *sdata;
 };
 
-
-int p9_errstr2errno(char *errstr, int len);
-
-int p9_error_init(void);
-int p9_trans_fd_init(void);
-void p9_trans_fd_exit(void);
 #endif /* P9PROTO_H */
