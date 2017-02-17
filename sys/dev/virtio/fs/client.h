@@ -47,6 +47,7 @@ struct p9_client {
 	struct mtx p9req_mtx;
 	struct cv req_cv;
 	unsigned int msize;
+	char *io_buffer;
 #define MTU 8192
 	unsigned char proto_version;
 	struct p9_trans_module *trans_mod;

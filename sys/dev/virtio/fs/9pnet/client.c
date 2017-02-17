@@ -1,3 +1,29 @@
+/*-
+ * Copyright (c) 2016 Raviprakash Darbha
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ */
+
 /*
  * 9P Client API
  */
@@ -7,7 +33,7 @@
 #include "../protocol.h"
 #include "../9p.h"
 
-int p9_debug_level = 0xFFFF;
+int p9_debug_level = 0;//0xFFFF;
 
 struct p9_req_t *p9_get_request(void);
 void p9_client_begin_disconnect(struct p9_client *clnt);
@@ -352,7 +378,7 @@ error:
 	return err;
 }
 
-#define INT_MAX 1024 // This is the max inode number.
+#define INT_MAX 1024  * 1024 // max inode.
 /* Return the client to the session in the FS to hold it */
 struct p9_client *
 p9_client_create(struct mount *mp)
@@ -367,10 +393,14 @@ p9_client_create(struct mount *mp)
 	clnt->trans_mod = NULL;
 	clnt->trans = NULL;
 
-
 	/* Parse should have set trans_mod */
 	err = p9_parse_opts(mp, clnt);
 	if (err < 0)
+		goto bail_out;
+
+	/*Allocate the iobuffer */
+	clnt->io_buffer = malloc(clnt->msize, M_TEMP, M_WAITOK | M_ZERO);
+	if (clnt->io_buffer == NULL)
 		goto bail_out;
 
 	if (clnt->trans_mod == NULL) {
@@ -423,6 +453,9 @@ p9_client_destroy(struct p9_client *clnt)
 
 	if (clnt->fidpool)
 		delete_unrhdr(clnt->fidpool);
+
+	if (clnt->io_buffer)
+		free(clnt->io_buffer, M_TEMP);
 
         free(clnt ,M_TEMP);
 }
@@ -960,10 +993,6 @@ p9_client_write(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 
 	p9_debug(TRANS, ">>> TWRITE fid %d offset %llu  %u\n",
 				fid->fid, (unsigned long long) offset, count);
-
-	p9_debug(TRANS, ">>> TREAD fid %d offset %llu %u\n",
-		   fid->fid, (unsigned long long) offset, count);
-
 	rsize = fid->iounit;
         if (!rsize || rsize > clnt->msize)
                   rsize = clnt->msize;

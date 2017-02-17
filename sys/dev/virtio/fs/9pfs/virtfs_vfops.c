@@ -1,6 +1,30 @@
 /*-
-*
- * Plan9 filesystem (9P2000.u) implementation.
+ * Copyright (c) 2016 Raviprakash Darbha
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ */
+
+/*
  * This file consists of all the VFS interactions.
  */
 
@@ -330,24 +354,6 @@ out:
 		(void) virtfs_unmount(mp, MNT_FORCE);
 	return (error);
 }
-
-
-/* This one only makes the root_vnode. We already have the virtfs_node for this 
-vnode. */
-// TODO:FIx this for create and then call it 
-#if 0
-static int virtfs_vget(struct mount *mp, struct vnode *vp)
-{
-	int error = 0;
-	
-	/* Allocate a new vnode. */
-	if ((error = virtfs_vget(mp, &vp)) != 0) {
-		vp = NULLVP;
-		return (error);
-	}
-	return 0;
-}
-#endif
 
 static int
 virtfs_root(struct mount *mp, int lkflags, struct vnode **vpp)

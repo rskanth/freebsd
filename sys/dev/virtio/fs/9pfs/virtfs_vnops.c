@@ -1,3 +1,29 @@
+/*-
+ * Copyright (c) 2016 Raviprakash Darbha
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ */
+
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
@@ -244,10 +270,9 @@ virtfs_mkdir(struct vop_mkdir_args *ap)
         perm = convert_to_p9_mode(mode | S_IFDIR);
 
         ret = create_wrapper(dir_node, cnp, NULL, perm, P9PROTO_ORDWR, vpp);
-                
+
 	return ret;
 }
-
 
 static int
 virtfs_mknod(struct vop_mknod_args *ap)
@@ -645,7 +670,6 @@ virtfs_read(struct vop_read_args *ap)
 	struct vnode *vp = ap->a_vp;
         struct uio *uio = ap->a_uio;
         struct virtfs_node *np = VTON(vp);
-	char *data = NULL;
 	uint64_t offset;
 	uint64_t ret;
 	uint64_t resid;
@@ -665,6 +689,9 @@ virtfs_read(struct vop_read_args *ap)
         if (uio->uio_offset < 0)
                 return (EINVAL);
 
+	/* Make sure to zeroize the buffer */
+	memset(clnt->io_buffer, 0, clnt->msize);
+
 	/* whr in the file are we to start reading */
 	offset = uio->uio_offset;
 	filesize = np->inode.i_size;
@@ -674,11 +701,6 @@ virtfs_read(struct vop_read_args *ap)
 	 p9_debug(VOPS, "virtfs_read called %lu at %lu\n",
             uio->uio_resid, (uintmax_t)uio->uio_offset);
 
-	/* Allocate the a 8K buffer firsta 8K. We can only do 8K at a time */
-	data = malloc(clnt->msize, M_TEMP, M_WAITOK | M_ZERO);
-	if (data == NULL)
-		return EIO;
-
 	while ((resid = uio->uio_resid) > 0) {
 		if (offset >= filesize)
 			break;
@@ -686,23 +708,19 @@ virtfs_read(struct vop_read_args *ap)
 		if (count == 0)
 			break;
 
-		memset(data, 0, clnt->msize); ///
+		memset(clnt->io_buffer, 0, clnt->msize);
 		/* Copy m_size bytes into the uio */
-		ret = p9_client_read(np->vofid, offset, count, data);
+		ret = p9_client_read(np->vofid, offset, count, clnt->io_buffer);
 
 		/* count can either be what it was here or lesser(based on what we get
 		 */
-                error = uiomove(data, ret, uio);
-		if (error) {
+                error = uiomove(clnt->io_buffer, ret, uio);
+		if (error)
 			return error;
-		}
 
 		offset += ret;
         }
 	uio->uio_offset = offset;
-
-	if (data)
-		free(data, M_TEMP);
 
 	return 0;
 }
@@ -724,7 +742,6 @@ virtfs_write(struct vop_write_args *ap)
 	struct vnode *vp = ap->a_vp;
         struct uio *uio = ap->a_uio;
         struct virtfs_node *node = VTON(vp);
-	char *data = NULL;
 	uint64_t offset;
 	uint64_t ret;
 	uint64_t resid;
@@ -768,37 +785,30 @@ virtfs_write(struct vop_write_args *ap)
         resid = uio->uio_resid;
 	offset = uio->uio_offset;
         error = 0;
- 
-	/* Allocate the a 8K buffer firsta 8K. We can only do 8K at a time */
-	// Can we just stick this someehere instead of allocating and freeing everytime
-	// ?  also explore direct copy of uio into pdu->sdata to avoid another copy.
-	data = malloc(clnt->msize, M_TEMP, M_WAITOK | M_ZERO);
-	if (data == NULL)
-		return EIO;
+
+	/* Make sure to zeroize the buffer */
+	memset(clnt->io_buffer, 0, clnt->msize);
 
 	/* Even though we have a 8k buffer, Qemu is typically doing 8168
 	 * because of a HDR of 24. Use that amount for transfers so that we dont
 	 * drop anything.
 	 */
 
-	if (node->vofid->iounit == 0) {
-		iounit = 8168; // msize- 24;
-	} else {
-		iounit = node->vofid->iounit;
-	}
+	iounit = 8168; // msize- 24;
 
 	while ((resid = uio->uio_resid) > 0) {
 
-		memset(data, 0, clnt->msize);
+		memset(clnt->io_buffer, 0, clnt->msize);
 
 		count = MIN(resid, iounit);
-		error = uiomove(data, count, uio);
+		error = uiomove(clnt->io_buffer, count, uio);
 		if (error) {
 			return error;
 		}
 
 		/* Copy m_size bytes from the uio */
-		ret = p9_client_write(node->vofid, offset, count, data);
+		ret = p9_client_write(node->vofid, offset, count, clnt->io_buffer);
+
 		offset += ret;
         }
 
@@ -812,9 +822,6 @@ virtfs_write(struct vop_write_args *ap)
 		/* update the modified timers. */
 		virtfs_itimes(vp);
         }
-
-	if (data)
-		free(data, M_TEMP);
 
 	return 0;
 }
@@ -910,7 +917,6 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	struct virtfs_node *np = VTON(ap->a_vp);
         int error = 0;
 	int count = 0;
-	char *data = NULL;
 	uint64_t file_size;
 	struct p9_client *clnt = np->virtfs_ses->clnt;
 
@@ -928,11 +934,8 @@ virtfs_readdir(struct vop_readdir_args *ap)
         p9_debug(VOPS, "virtfs_readdir filesize %jd resid %zd\n",
 	   (uintmax_t)file_size, uio->uio_resid);
 
-
-	/* Allocate the a 8K buffer firsta 8K. We can only do 8K at a time */
-	data = malloc(clnt->msize, M_TEMP, M_WAITOK | M_ZERO);
-	if (data == NULL)
-		return EIO;
+	/* Make sure to zeroize the buffer */
+	memset(clnt->io_buffer, 0, clnt->msize);
 
 	count = min(clnt->msize, uio->uio_resid);
 
@@ -942,7 +945,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
                 diroffset = uio->uio_offset;
 
 		/* For now we assume our buffer 8K is enough for entries */
-		count = p9_client_readdir(np->vofid, (char *)data,
+		count = p9_client_readdir(np->vofid, (char *)clnt->io_buffer,
 			diroffset, count); /* The max size our client can handle */
 
 		if (count < 0) {
@@ -957,7 +960,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 			 * and continuing with the parse
 			 */
 			memset(&cde, 0, sizeof(struct dirent));
-			offset = p9dirent_read(clnt, data, offset, count,
+			offset = p9dirent_read(clnt, clnt->io_buffer, offset, count,
 				&cde);
 
 			if (offset < 0)
@@ -988,9 +991,6 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	if (ap->a_eofflag) {
 		*ap->a_eofflag = 1;
 	}
-
-	if (data)
-		free(data, M_TEMP);
 
 	return (error);
 }
