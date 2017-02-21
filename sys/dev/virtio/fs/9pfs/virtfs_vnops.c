@@ -39,7 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/stat.h>
 
 #include <sys/types.h>
-#include <fcntl.h>
+#include <sys/fcntl.h>
 #include "virtfs_proto.h"
 #include "virtfs.h"
 #include "../client.h"
@@ -111,7 +111,7 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 
 		/* client_walk is equivalent to searching a component name in a directory(fid)
 		 * here. If newfid is returned, we have found an entry for this component name
-		 * so, go and create the rest of the vnode infra(vget_wrapper) for the returned 
+		 * so, go and create the rest of the vnode infra(vget_wrapper) for the returned
 		 * newfid */
 
 		newfid = p9_client_walk(dnp->vfid,
@@ -153,13 +153,13 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 	}
 	/* Store the result the the cache if MAKEENTRY is specified in flags */
 	if ((cnp->cn_flags & MAKEENTRY) != 0)
-		cache_enter(dvp, *vpp, cnp);	
+		cache_enter(dvp, *vpp, cnp);
 
 	return (error);
 }
 
 static int
-create_wrapper(struct virtfs_node *dir_node, 
+create_wrapper(struct virtfs_node *dir_node,
 	struct componentname *cnp, char *extension, uint32_t perm, uint8_t mode,
 	struct vnode **vpp)
 {
@@ -167,7 +167,7 @@ create_wrapper(struct virtfs_node *dir_node,
         char *name = cnp->cn_nameptr;
         struct p9_fid *ofid, *newfid;
 	struct virtfs_session *ses = dir_node->virtfs_ses;
-	struct mount *mp = ses->virtfs_mount; 
+	struct mount *mp = ses->virtfs_mount;
 
         p9_debug(VOPS, "name %pd\n", name);
 
@@ -194,9 +194,9 @@ create_wrapper(struct virtfs_node *dir_node,
                 p9_debug(VOPS, "p9_client_fcreate failed %d\n", err);
                 goto out;
         }
-	
+
 	/*
-	 * Do the lookup part and add the vnode, virtfs_node. Note that vpp 
+	 * Do the lookup part and add the vnode, virtfs_node. Note that vpp
 	 * is filled in here.
 	 */
 
@@ -214,8 +214,8 @@ create_wrapper(struct virtfs_node *dir_node,
 
         if ((cnp->cn_flags & MAKEENTRY) != 0)
                 cache_enter(NTOV(dir_node), *vpp, cnp);
-    
-        p9_debug(VOPS, "created file under vp %p node %p fid %d\n", *vpp, dir_node,
+
+        p9_debug(VOPS, "created file under vp %p node %p fid %ld\n", *vpp, dir_node,
             (uintmax_t)dir_node->vfid->fid);
 	// Clunk the open ofid.
 	if (ofid) {
@@ -250,7 +250,7 @@ virtfs_create(struct vop_create_args *ap)
         perm = convert_to_p9_mode(mode);
 
         ret = create_wrapper(dir_node, cnp, NULL, perm, P9PROTO_ORDWR, vpp);
-                
+
 	return ret;
 }
 
@@ -370,7 +370,7 @@ static int
 virtfs_close(struct vop_close_args *ap)
 {
 	struct virtfs_node *np = VTON(ap->a_vp);
-	
+
 	if (np == NULL) {
 		return 0;
 	}
@@ -479,7 +479,7 @@ virtfs_getattr(struct vop_getattr_args *ap)
 	int error = 0;
 
 	p9_debug(VOPS, "getattr %u %u\n",inode->i_mode,IFTOVT(inode->i_mode));
- 
+
 	/* Reload our stats once to get the right values.*/
 	error = virtfs_reload_stats(vp);
 	if (error)
@@ -507,39 +507,39 @@ virtfs_getattr(struct vop_getattr_args *ap)
 static void
 dump_inode(struct virtfs_inode *inode)
 {
-	printf(">>>>>INODE DUMP \n");	
+	printf(">>>>>INODE DUMP \n");
 
-	printf("inode->size :%hhu \n",inode->i_size);	
-	printf("inode->type :%hhu \n",inode->i_type);	
-	printf("inode->mode :%u \n",inode->i_mode);	
-	printf("inode->atime:%u \n",inode->i_atime);	
-	printf("inode->mtime:%u \n",inode->i_mtime);	
-	printf("inode->name :%s \n",inode->i_name);	
-	printf("inode->uid  :%s \n",inode->i_uid);	
-	printf("inode->gid :%s \n",inode->i_gid);	
-	printf("inode->n_uid :%u \n",inode->n_uid);	
-	printf("inode->n_gid :%u \n",inode->n_gid);	
+	printf("inode->size :%hhu \n",inode->i_size);
+	printf("inode->type :%hhu \n",inode->i_type);
+	printf("inode->mode :%u \n",inode->i_mode);
+	printf("inode->atime:%u \n",inode->i_atime);
+	printf("inode->mtime:%u \n",inode->i_mtime);
+	printf("inode->name :%s \n",inode->i_name);
+	printf("inode->uid  :%s \n",inode->i_uid);
+	printf("inode->gid :%s \n",inode->i_gid);
+	printf("inode->n_uid :%u \n",inode->n_uid);
+	printf("inode->n_gid :%u \n",inode->n_gid);
 }
 
 static void
 dump_stat(struct p9_wstat *stat)
 {
-	printf(">>>>>STAT DUMP \n");	
+	printf(">>>>>STAT DUMP \n");
 
-	printf("stat->size :%hhu \n",stat->size);	
-	printf("stat->type :%hhu \n",stat->type);	
-	printf("stat->mode :%u \n",stat->mode);	
-	printf("stat->atime:%u \n",stat->atime);	
-	printf("stat->mtime:%u \n",stat->mtime);	
-	printf("stat->name :%s \n",stat->name);	
-	printf("stat->uid  :%s \n",stat->uid);	
-	printf("stat->gid :%s \n",stat->gid);	
-	printf("stat->n_uid :%u \n",stat->n_uid);	
-	printf("stat->n_gid :%u \n",stat->n_gid);	
+	printf("stat->size :%hhu \n",stat->size);
+	printf("stat->type :%hhu \n",stat->type);
+	printf("stat->mode :%u \n",stat->mode);
+	printf("stat->atime:%u \n",stat->atime);
+	printf("stat->mtime:%u \n",stat->mtime);
+	printf("stat->name :%s \n",stat->name);
+	printf("stat->uid  :%s \n",stat->uid);
+	printf("stat->gid :%s \n",stat->gid);
+	printf("stat->n_uid :%u \n",stat->n_uid);
+	printf("stat->n_gid :%u \n",stat->n_gid);
 }
 #endif
 
-static int 
+static int
 virtfs_mode2perm(struct virtfs_session *ses,
                        struct p9_wstat *stat)
 {
@@ -560,7 +560,7 @@ virtfs_mode2perm(struct virtfs_session *ses,
         return res;
 }
 
-uint32_t 
+uint32_t
 convert_to_p9_mode(uint32_t mode)
 {
         int res;
@@ -582,7 +582,7 @@ convert_to_p9_mode(uint32_t mode)
         return res;
 }
 
-static int 
+static int
 virtfs_mode_to_generic(struct virtfs_session *ses, struct p9_wstat *stat)
 {
 	uint32_t mode = stat->mode;
@@ -896,7 +896,7 @@ virtfs_symlink(struct vop_symlink_args *ap)
 }
 
 #if 0
-static void 
+static void
 dump_p9dirent(struct dirent *p)
 {
 	printf("name :%s d_reclen%hu d_type:%hhu ino_%hu \n",p->d_name,p->d_reclen,p->d_type,p->d_fileno);
@@ -913,7 +913,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	struct uio *uio = ap->a_uio;
         struct vnode *vp = ap->a_vp;
         struct dirent cde;
-	uint64_t offset = 0,diroffset;
+	uint64_t offset = 0, diroffset = 0;
 	struct virtfs_node *np = VTON(ap->a_vp);
         int error = 0;
 	int count = 0;
@@ -974,7 +974,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 			if (uio->uio_resid < GENERIC_DIRSIZ(&cde))
 				break;
 
-			// Fix this number otherwise it ll break the vfs readir 
+			// Fix this number otherwise it ll break the vfs readir
 			cde.d_fileno = 23+offset;
 			//dump_p9dirent(&cde);
 			/* Transfer */

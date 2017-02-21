@@ -63,7 +63,7 @@ inline int p9_is_proto_dotu(struct p9_client *clnt)
 	return clnt->proto_version == p9_proto_2000u;
 }
 
-static int 
+static int
 p9_parse_opts(struct mount  *mp, struct p9_client *clnt)
 {
 	char *trans;
@@ -78,9 +78,9 @@ p9_parse_opts(struct mount  *mp, struct p9_client *clnt)
         	return (error);
 
 	p9_debug(TRANS, " Attaching to the %s transport \n",trans);
-	/* 
-         * This will be moved to mod where we can have multiple entries in the 
-	 * table to search for and return the correct pointer. For now just get 
+	/*
+         * This will be moved to mod where we can have multiple entries in the
+	 * table to search for and return the correct pointer. For now just get
          * the default virtio_ops.
 	 */
     	clnt->trans_mod = p9_get_default_trans();
@@ -208,7 +208,7 @@ p9_client_check_return(struct p9_client *c,
         }
 	/* No error , We are done with the preprocessing. Return to the caller
 	 * and process the actual data.
-	 */ 
+	 */
         if (req->rc->id != P9PROTO_RERROR)
                 return 0;
 
@@ -271,11 +271,11 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 
 	if (err)
 		goto error;
-	/* Before we return the req (receive buffer and process it) 
+	/* Before we return the req (receive buffer and process it)
          * we pre process the header to fill in the rc before calling
 	 * into the protocol infra to analyze the data.
 	 */
-	err = p9_client_check_return(c, req);	
+	err = p9_client_check_return(c, req);
 	if (err)
 		goto error;
 
@@ -461,7 +461,7 @@ p9_client_destroy(struct p9_client *clnt)
 }
 
 #if 0
-static 
+static
 void dump_fid(struct p9_fid *fid)
 {
 	printf("<<<DUMP_FID \n");
@@ -469,7 +469,7 @@ void dump_fid(struct p9_fid *fid)
 }
 #endif
 
-/* 
+/*
  * Called from mount. fid returned is created for the root inode.
  * the other instances already have the afid.
  */
@@ -586,7 +586,7 @@ error:
 }
 
 /* oldfid is the fid of the directory. We need to search the component name
- * present in wnames 
+ * present in wnames
  */
 struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 		char **wnames, int clone)
@@ -715,7 +715,7 @@ struct p9_wstat *p9_client_stat(struct p9_fid *fid)
 	int err = 0;
 	struct p9_client *clnt;
 	struct p9_wstat *stat;
-	struct p9_req_t *req;
+	struct p9_req_t *req = NULL;
 	uint16_t ignored;
 
 	stat = malloc(sizeof(struct p9_wstat) ,M_TEMP,  M_WAITOK | M_ZERO);
@@ -883,8 +883,8 @@ error:
 	return err;
 }
 
-/* Only support for readdir for now .*/ 
-int 
+/* Only support for readdir for now .*/
+int
 p9_client_readdir(struct p9_fid *fid, char *data, uint64_t offset, uint32_t count)
 {
 	int err;
@@ -979,7 +979,7 @@ p9_client_read(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 error:
 	if (req)
 		p9_free_req(req);
-	return error;	
+	return error;
 }
 
 int
@@ -1038,7 +1038,7 @@ error:
 	return err;
 }
 
-int 
+int
 p9_client_file_create(struct p9_fid *fid, char *name, uint32_t perm, int mode,
                      char *extension)
 {
@@ -1056,14 +1056,14 @@ p9_client_file_create(struct p9_fid *fid, char *name, uint32_t perm, int mode,
         if (fid->mode != -1)
                 return EINVAL;
 
-        req = p9_client_request(clnt, P9PROTO_TCREATE, "dsdb?s", fid->fid, name, perm,            
+        req = p9_client_request(clnt, P9PROTO_TCREATE, "dsdb?s", fid->fid, name, perm,
                                 mode, extension);
 	if (req == NULL) {
 		err = ENOMEM;
 		goto error;
 	}
 
-        err = p9pdu_readf(req->rc, clnt->proto_version, "Qd", &qid, &iounit);            
+        err = p9pdu_readf(req->rc, clnt->proto_version, "Qd", &qid, &iounit);
 
 	if (err)
 		goto error;

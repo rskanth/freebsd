@@ -1,0 +1,3 @@
+*.o
+*.gz
+mount_p9fs
