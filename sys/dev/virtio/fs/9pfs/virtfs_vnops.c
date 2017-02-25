@@ -48,6 +48,8 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_extern.h>
 #include <vm/vm_object.h>
 #include <vm/vnode_pager.h>
+#include <sys/buf.h>
+#include <sys/bio.h>
 
 struct vop_vector virtfs_vnops;
 uint32_t convert_to_p9_mode(uint32_t mode);
@@ -496,6 +498,7 @@ virtfs_getattr(struct vop_getattr_args *ap)
         vap->va_gid = inode->n_gid;
         vap->va_fsid = vp->v_mount->mnt_stat.f_fsid.val[0];
         vap->va_size = inode->i_size;
+	vap->va_blocksize = 512;
         vap->va_gen = 0;
         vap->va_filerev = 0;
         vap->va_vaflags = 0;
@@ -749,6 +752,7 @@ virtfs_write(struct vop_write_args *ap)
 	int error = 0, ioflag, iounit;
 	uint64_t file_size;
 	struct p9_client *clnt = node->virtfs_ses->clnt;
+	struct vop_open_args map;
 
    	vp = ap->a_vp;
         uio = ap->a_uio;
@@ -796,6 +800,18 @@ virtfs_write(struct vop_write_args *ap)
 
 	iounit = 8168; // msize- 24;
 
+	/* Before we do that actual write, make sure the vp is open. Only in case of ktr_drain/write, it
+	 * could call on a closed file. Force open for now.
+	 */
+
+	if (node->vofid == NULL) {
+		// Force a file open
+		map.a_mode = 3;// 
+		map.a_td = curthread;
+		map.a_vp = vp;
+		virtfs_open(&map);
+	}
+
 	while ((resid = uio->uio_resid) > 0) {
 
 		memset(clnt->io_buffer, 0, clnt->msize);
@@ -808,6 +824,8 @@ virtfs_write(struct vop_write_args *ap)
 
 		/* Copy m_size bytes from the uio */
 		ret = p9_client_write(node->vofid, offset, count, clnt->io_buffer);
+	        p9_debug(VOPS, "INNER LOOP virtfs_write called %#zx at %#jx\n",
+            		uio->uio_resid, (uintmax_t)uio->uio_offset);
 
 		offset += ret;
         }
@@ -937,6 +955,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	/* Make sure to zeroize the buffer */
 	memset(clnt->io_buffer, 0, clnt->msize);
 
+	
 	count = min(clnt->msize, uio->uio_resid);
 
 	offset = 0;
@@ -960,7 +979,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 			 * and continuing with the parse
 			 */
 			memset(&cde, 0, sizeof(struct dirent));
-			offset = p9dirent_read(clnt, clnt->io_buffer, offset, count,
+			offset = p9_dirent_read(clnt, clnt->io_buffer, offset, count,
 				&cde);
 
 			if (offset < 0)
@@ -993,6 +1012,28 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	}
 
 	return (error);
+}
+
+static int
+virtfs_strategy
+        (struct vop_strategy_args /* {
+                struct buf *a_vp;
+                struct buf *a_bp;
+        } */ *ap)
+{
+	struct vnode *vp = ap->a_vp;
+        struct buf *bp = ap->a_bp;
+        struct virtfs_node *node = VTON(vp);
+
+	if (bp->b_iocmd == BIO_READ) {
+
+		p9_client_read(node->vofid, 0, PAGE_SIZE, (char *)bp);
+                return (0);
+        }
+
+	p9_client_write(node->vofid, 0, PAGE_SIZE, (char *)bp);
+
+	return 0;
 }
 
 static int
@@ -1031,4 +1072,5 @@ struct vop_vector virtfs_vnops = {
 	.vop_symlink =		virtfs_symlink,
 	.vop_readlink =		virtfs_readlink,
 	.vop_inactive =		virtfs_inactive,
+	.vop_strategy = 	virtfs_strategy,
 };

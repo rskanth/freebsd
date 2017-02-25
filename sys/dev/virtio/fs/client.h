@@ -90,14 +90,15 @@ int p9_client_file_create(struct p9_fid *fid, char *name, uint32_t perm, int mod
                      char *extension);
 int p9_client_remove(struct p9_fid *fid);
 
-int p9dirent_read(struct p9_client *clnt, char *buf, int start, int len,
+int p9_dirent_read(struct p9_client *clnt, char *buf, int start, int len,
 		  struct dirent *dirent);
 struct p9_wstat *p9_client_stat(struct p9_fid *fid);
 int p9_client_wstat(struct p9_fid *fid, struct p9_wstat *wst);
 int p9_client_setattr(struct p9_fid *fid, struct p9_iattr_dotl *attr);
+int p9_client_statfs(struct p9_fid *fid, struct p9_statfs *stat);
 
 struct p9_stat_dotl *p9_client_getattr(struct p9_fid *fid, uint64_t request_mask);
-struct p9_stat_dotl *p9_client_getattr_dotl(struct p9_fid *fid, uint64_t request_mask);
+//struct p9_stat_dotl *p9_client_getattr_dotl(struct p9_fid *fid, uint64_t request_mask);
 int p9_client_statread(struct p9_client *clnt, char *data, size_t len, struct p9_wstat *st);
 int p9_is_proto_dotu(struct p9_client *clnt);
 int p9_is_proto_dotl(struct p9_client *clnt);

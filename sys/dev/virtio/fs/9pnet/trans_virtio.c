@@ -45,7 +45,6 @@
 #include <dev/virtio/virtio_ring.h>
 #include <sys/condvar.h>
 
-#define VIRTQUEUE_NUM	128
 #define VT9P_MTX(_sc) &(_sc)->vt9p_mtx
 #define VT9P_LOCK(_sc) mtx_lock(VT9P_MTX(_sc))
 #define VT9P_UNLOCK(_sc) mtx_unlock(VT9P_MTX(_sc))
@@ -97,14 +96,14 @@ vt9p_request(struct p9_client *client, struct p9_req_t *req)
 	/* Handle out VirtIO ring buffers */
 	err = sglist_append(sg, req->tc->sdata, req->tc->size);
 	if (err < 0) {
-		printf("Something wrong with sglist append ..\n");	
+		p9_debug(TRANS, "sglist append failed\n");	
 		return err;
 	}
 	readable = sg->sg_nseg;
 
 	err = sglist_append(sg, req->rc->sdata, req->rc->capacity);
 	if (err < 0) {
-		printf("Something wrong with sglist append ..\n");	
+		p9_debug(TRANS, " sglist append failed\n");	
 		return err;
 	}
 	writable = sg->sg_nseg - readable;
@@ -117,13 +116,15 @@ req_retry:
 
 	if (err < 0) {
 		if (err == ENOSPC) {
-			/* Condvar for the submit queue. Can we still hold chan lock ?*/
+			/* Condvar for the submit queue. Unlock the chan since wakeup needs one.*/
+			VT9P_UNLOCK(chan);
 			cv_wait(&chan->submit_cv, &chan->submit_cv_lock);
 			p9_debug(TRANS, "Retry virtio request\n");
+			VT9P_LOCK(chan);
 			goto req_retry;
 		} else {
 			p9_debug(TRANS,
-				 "virtio rpc add_sgs returned failure\n");
+				 "virtio enuqueue failed \n");
 			return EIO;
 		}
 	}
@@ -242,7 +243,7 @@ static int vt9p_attach(device_t dev)
 	/* We expect one virtqueue, for requests. */
 	err = vt9p_alloc_virtqueue(chan);
 
-	if (err < 0) {
+	if (err) {
 		p9_debug(TRANS, "Allocating the virtqueue failed \n");
 		goto out;
 	}
@@ -307,7 +308,7 @@ struct p9_trans_module *p9_get_default_trans(void)
 
 void p9_put_trans(struct p9_trans_module *m)
 {
-	printf("%s: its just a stub now\n", __func__);
+	p9_debug(TRANS, "%s: its just a stub now\n", __func__);
 }
 
 

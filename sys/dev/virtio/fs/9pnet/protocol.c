@@ -26,8 +26,6 @@
 
 
 /*
- * net/protocol.c
- *
  * 9P Protocol Support Code
  * This file provides the standard fot the FS interactions with the Qemu interface as it can understand
  * only this protocol.
@@ -40,17 +38,17 @@
 #include "../protocol.h"
 
 static int
-p9pdu_writef(struct p9_buffer *pdu, int proto_version, const char *fmt, ...);
-void p9stat_p9_free(struct p9_wstat *stbuf);
+p9_buf_writef(struct p9_buffer *buf, int proto_version, const char *fmt, ...);
+void stat_free(struct p9_wstat *sbuf);
 
-/*static void dump_pdu(struct p9_buffer *pdu)
+/*static void dump_buf(struct p9_buffer *buf)
 {
-	printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
-	printf("strng%s",&pdu->sdata[0]);
+	printf("size %u id %c tag%u\n",buf->size,buf->id,buf->tag);
+	printf("strng%s",&buf->sdata[0]);
 	printf("\n");
 }*/
 
-void p9stat_p9_free(struct p9_wstat *stbuf)
+void stat_free(struct p9_wstat *stbuf)
 {
 	free(stbuf->name, M_TEMP);
 	free(stbuf->uid, M_TEMP);
@@ -59,111 +57,87 @@ void p9stat_p9_free(struct p9_wstat *stbuf)
 	free(stbuf->extension, M_TEMP);
 }
 
-size_t pdu_read(struct p9_buffer *pdu, void *data, size_t size)
+size_t buf_read(struct p9_buffer *buf, void *data, size_t size)
 {
-	size_t len = min(pdu->size - pdu->offset, size);
-	//printf("%d %d %d %d sdata %p \n", len, pdu->offset,size,pdu->size ,&pdu->sdata[0]);
-	//printf("data in the pdu :%hhu %hhu %hhu %hhu \n",pdu->sdata[0],pdu->sdata[1],pdu->sdata[2],pdu->sdata[3]);
-	memcpy(data, &pdu->sdata[pdu->offset], len);
-	pdu->offset += len;
+	size_t len = min(buf->size - buf->offset, size);
+	//printf("%d %d %d %d sdata %p \n", len, buf->offset,size,buf->size ,&buf->sdata[0]);
+	//printf("data in the buf :%hhu %hhu %hhu %hhu \n",buf->sdata[0],buf->sdata[1],buf->sdata[2],buf->sdata[3]);
+	memcpy(data, &buf->sdata[buf->offset], len);
+	buf->offset += len;
 	return size - len;
 }
 
-static size_t pdu_write(struct p9_buffer *pdu, const void *data, size_t size)
+static size_t buf_write(struct p9_buffer *buf, const void *data, size_t size)
 {
-	size_t len = min(pdu->capacity - pdu->size, size);
-	memcpy(&pdu->sdata[pdu->size], data, len);
-	pdu->size += len;
+	size_t len = min(buf->capacity - buf->size, size);
+	memcpy(&buf->sdata[buf->size], data, len);
+	buf->size += len;
 	return size - len;
 }
-
-
-/*
-	b - int8_t
-	w - int16_t
-	d - int32_t
-	q - int64_t
-	s - string
-	u - numeric uid
-	g - numeric gid
-	S - stat
-	Q - qid
-	D - data blob (int32_t size followed by void *, results are not p9_freed)
-	T - array of strings (int16_t count, followed by strings)
-	R - array of qids (int16_t count, followed by qids)
-	A - stat for 9p2000.L (p9_stat_dotl)
-	? - if optional = 1, continue parsing
-*/
 
 static int
-p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
+p9_buf_vreadf(struct p9_buffer *buf, int proto_version, const char *fmt,
 	va_list ap)
 {
 	const char *ptr;
-	int errcode = 0;
+	int err = 0;
 
 	for (ptr = fmt; *ptr; ptr++) {
 		switch (*ptr) {
 		case 'b':{
 				int8_t *val = va_arg(ap, int8_t *);
-				if (pdu_read(pdu, val, sizeof(*val))) {
-					errcode = -EFAULT;
+				if (buf_read(buf, val, sizeof(*val))) {
+					err = EFAULT;
 					break;
 				}
 			}
 			break;
 		case 'w':{
 				int16_t *val = va_arg(ap, int16_t *);
-				int16_t le_val;
-				if (pdu_read(pdu, &le_val, sizeof(le_val))) {
-					errcode = -EFAULT;
+				if (buf_read(buf, val, sizeof(*val))) {
+					err = EFAULT;
 					break;
 				}
-				*val = le_val;
 			}
 			break;
 		case 'd':{
 				int32_t *val = va_arg(ap, int32_t *);
-				int32_t le_val;
-				if (pdu_read(pdu, &le_val, sizeof(le_val))) {
+				if (buf_read(buf, val, sizeof(*val))) {
 					//printf("DId this break \n");
-					errcode = -EFAULT;
+					err = EFAULT;
 					break;
 				}
-				*val = le_val;
 				//printf("After sending :%d %d\n",*val,le_val);
 		
 			}
 			break;
 		case 'q':{
 				int64_t *val = va_arg(ap, int64_t *);
-				int64_t le_val;
-				if (pdu_read(pdu, &le_val, sizeof(le_val))) {
-					errcode = -EFAULT;
+				if (buf_read(buf, val, sizeof(*val))) {
+					err = EFAULT;
 					break;
 				}
-				*val = le_val;
 			}
 			break;
 		case 's':{
 				char **sptr = va_arg(ap, char **);
 				uint16_t len;
 
-				errcode = p9pdu_readf(pdu, proto_version,
+				err = p9_buf_readf(buf, proto_version,
 								"w", &len);
 				//printf("len should be :%hu \n",len);
 
-				if (errcode)
+				if (err)
 					break;
 
 				*sptr = malloc(len + 1, M_TEMP, M_NOWAIT);
 				if (*sptr == NULL) {
 					//printf("code break at EFAULT ..\n");
-					errcode = -EFAULT;
+					err = EFAULT;
 					break;
 				}
-				if (pdu_read(pdu, *sptr, len)) {
-					errcode = -EFAULT;
+				if (buf_read(buf, *sptr, len)) {
+					err = EFAULT;
 					free(*sptr, M_TEMP);
 					*sptr = NULL;
 				} else
@@ -174,7 +148,7 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				struct p9_qid *qid =
 				    va_arg(ap, struct p9_qid *);
 
-				errcode = p9pdu_readf(pdu, proto_version, "bdq",
+				err = p9_buf_readf(buf, proto_version, "bdq",
 						      &qid->type, &qid->version,
 						      &qid->path);
 				//printf("done with legit Q read ..\n");
@@ -188,8 +162,7 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				stbuf->n_uid = stbuf->n_muid = 0;
 				stbuf->n_gid = 0;
 
-				errcode =
-				    p9pdu_readf(pdu, proto_version,
+				err = p9_buf_readf(buf, proto_version,
 						"wwdQdddqssss?sddd",
 						&stbuf->size, &stbuf->type,
 						&stbuf->dev, &stbuf->qid,
@@ -200,8 +173,8 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 						&stbuf->extension,
 						&stbuf->n_uid, &stbuf->n_gid,
 						&stbuf->n_muid);
-				if (errcode)
-					p9stat_p9_free(stbuf);
+				if (err)
+					stat_free(stbuf);
 				//printf("length of file :%lu\n",stbuf->length);  
 			}
 			break;
@@ -209,12 +182,11 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				uint32_t *count = va_arg(ap, uint32_t *);
 				void **data = va_arg(ap, void **);
 
-				errcode =
-				    p9pdu_readf(pdu, proto_version, "d", count);
-				if (!errcode) {
+				err = p9_buf_readf(buf, proto_version, "d", count);
+				if (!err) {
 					*count = MIN(*count,
-						  pdu->size - pdu->offset);
-					*data = &pdu->sdata[pdu->offset];
+						  buf->size - buf->offset);
+					*data = &buf->sdata[buf->offset];
 				}
 			}
 			break;
@@ -222,29 +194,29 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				uint16_t *nwname = va_arg(ap, uint16_t *);
 				char ***wnames = va_arg(ap, char ***);
 
-				errcode = p9pdu_readf(pdu, proto_version,
+				err = p9_buf_readf(buf, proto_version,
 								"w", nwname);
-				if (!errcode) {
+				if (!err) {
 					*wnames = malloc(sizeof(char *) * *nwname, M_TEMP, M_NOWAIT);
 					if (!*wnames)
-						errcode = -ENOMEM;
+						err = ENOMEM;
 				}
 
-				if (!errcode) {
+				if (!err) {
 					int i;
 
 					for (i = 0; i < *nwname; i++) {
-						errcode =
-						    p9pdu_readf(pdu,
+						err =
+						    p9_buf_readf(buf,
 								proto_version,
 								"s",
 								&(*wnames)[i]);
-						if (errcode)
+						if (err)
 							break;
 					}
 				}
 
-				if (errcode) {
+				if (err) {
 					if (*wnames) {
 						int i;
 
@@ -263,31 +235,30 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 
 				*wqids = NULL;
 
-				errcode =
-				    p9pdu_readf(pdu, proto_version, "w", nwqid);
-				if (!errcode) {
+				err = p9_buf_readf(buf, proto_version, "w", nwqid);
+				if (!err) {
 					*wqids =
 					    malloc(*nwqid *
 						    sizeof(struct p9_qid), M_TEMP, M_NOWAIT);
 					if (*wqids == NULL)
-						errcode = -ENOMEM;
+						err = ENOMEM;
 				}
 
-				if (!errcode) {
+				if (!err) {
 					int i;
 
 					for (i = 0; i < *nwqid; i++) {
-						errcode =
-						    p9pdu_readf(pdu,
+						err =
+						    p9_buf_readf(buf,
 								proto_version,
 								"Q",
 								&(*wqids)[i]);
-						if (errcode)
+						if (err)
 							break;
 					}
 				}
 
-				if (errcode) {
+				if (err) {
 					free(*wqids, M_TEMP);
 					*wqids = NULL;
 				}
@@ -298,8 +269,7 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				    va_arg(ap, struct p9_stat_dotl *);
 
 				memset(stbuf, 0, sizeof(struct p9_stat_dotl));
-				errcode =
-				    p9pdu_readf(pdu, proto_version,
+				err = p9_buf_readf(buf, proto_version,
 					"qQdugqqqqqqqqqqqqqqq",
 					&stbuf->st_result_mask,
 					&stbuf->qid,
@@ -329,53 +299,53 @@ p9pdu_vreadf(struct p9_buffer *pdu, int proto_version, const char *fmt,
 			break;
 		}
 
-		if (errcode)
+		if (err)
 			break;
 	}
 
-	return errcode;
+	return err;
 }
 
 int
-p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
+p9_buf_vwritef(struct p9_buffer *buf, int proto_version, const char *fmt,
 	va_list ap)
 {
 	const char *ptr;
-	int errcode = 0;
+	int err = 0;
 
 	for (ptr = fmt; *ptr; ptr++) {
 		switch (*ptr) {
 		case 'b':{
 				int8_t val = va_arg(ap, int);
-				if (pdu_write(pdu, &val, sizeof(val)))
-					errcode = -EFAULT;
+				if (buf_write(buf, &val, sizeof(val)))
+					err = EFAULT;
 				//printf("DId b %u \n",val);
-				//printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
-				//printf("bit mapint values%hhu \n",pdu->sdata[4]);
+				//printf("size %u id %c tag%u\n",buf->size,buf->id,buf->tag);
+				//printf("bit mapint values%hhu \n",buf->sdata[4]);
 	
 			}
 			break;
 		case 'w':{
 				int16_t val = va_arg(ap, int);
-				if (pdu_write(pdu, &val, sizeof(val)))
-					errcode = -EFAULT;
+				if (buf_write(buf, &val, sizeof(val)))
+					err = EFAULT;
 			}
 			break;
 		case 'd':{
 				int32_t val = va_arg(ap, int32_t);
-				//printf("before conversion :%d %d\n",val,pdu->size);
-				if (pdu_write(pdu, &val, sizeof(val)))
-					errcode = -EFAULT;
+				//printf("before conversion :%d %d\n",val,buf->size);
+				if (buf_write(buf, &val, sizeof(val)))
+					err = EFAULT;
 					//printf("DId  %d\n",val);
-					//printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
-					//printf("int values%d %d \n",pdu->sdata[0],pdu->sdata[5]);
+					//printf("size %u id %c tag%u\n",buf->size,buf->id,buf->tag);
+					//printf("int values%d %d \n",buf->sdata[0],buf->sdata[5]);
 				
 			}
 			break;
 		case 'q':{
 				int64_t val = va_arg(ap, int64_t);
-				if (pdu_write(pdu, &val, sizeof(val)))
-					errcode = -EFAULT;
+				if (buf_write(buf, &val, sizeof(val)))
+					err = EFAULT;
 			}
 			break;
 		case 's':{
@@ -384,30 +354,28 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				if (sptr)
 					len = MIN(strlen(sptr), 16);
 
-				errcode = p9pdu_writef(pdu, proto_version,
+				err = p9_buf_writef(buf, proto_version,
 								"w", len);
 				//printf("DId %s \n",sptr);
-				//printf("size %u id %c tag%u\n",pdu->size,pdu->id,pdu->tag);
+				//printf("size %u id %c tag%u\n",buf->size,buf->id,buf->tag);
 
-				if (!errcode && pdu_write(pdu, sptr, len))
-					errcode = -EFAULT;
+				if (!err && buf_write(buf, sptr, len))
+					err = EFAULT;
 
-				//printf("strng %hhu %hhu %s  \n",pdu->sdata[9],pdu->sdata[10],&pdu->sdata[11]);
+				//printf("strng %hhu %hhu %s  \n",buf->sdata[9],buf->sdata[10],&buf->sdata[11]);
 			}
 			break;
 		case 'Q':{
 				const struct p9_qid *qid =
 				    va_arg(ap, const struct p9_qid *);
-				errcode =
-				    p9pdu_writef(pdu, proto_version, "bdq",
+				err = p9_buf_writef(buf, proto_version, "bdq",
 						 qid->type, qid->version,
 						 qid->path);
 			} break;
 		case 'S':{
 				const struct p9_wstat *stbuf =
 				    va_arg(ap, const struct p9_wstat *);
-				errcode =
-				    p9pdu_writef(pdu, proto_version,
+				err = p9_buf_writef(buf, proto_version,
 						 "wwdQdddqssss?sddd",
 						 stbuf->size, stbuf->type,
 						 stbuf->dev, &stbuf->qid,
@@ -424,11 +392,11 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				void *data = va_arg(ap, void *);
 				//printf("Make sure we are hitting the D write .%d\n",count);
 
-				errcode = p9pdu_writef(pdu, proto_version,
+				err = p9_buf_writef(buf, proto_version,
 								"d", count);
-				// Count bytes of the blob into the pdu.
-				if (!errcode && pdu_write(pdu, data, count))
-					errcode = -EFAULT;
+				// Count bytes of the blob into the buf.
+				if (!err && buf_write(buf, data, count))
+					err = EFAULT;
 	
 			}
 			break;
@@ -437,18 +405,18 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				uint16_t nwname = va_arg(ap, int);
 				const char **wnames = va_arg(ap, const char **);
 
-				errcode = p9pdu_writef(pdu, proto_version, "w",
+				err = p9_buf_writef(buf, proto_version, "w",
 									nwname);
-				if (!errcode) {
+				if (!err) {
 					int i;
 
 					for (i = 0; i < nwname; i++) {
-						errcode =
-						    p9pdu_writef(pdu,
+						err =
+						    p9_buf_writef(buf,
 								proto_version,
 								 "s",
 								 wnames[i]);
-						if (errcode)
+						if (err)
 							break;
 					}
 				}
@@ -459,18 +427,18 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				struct p9_qid *wqids =
 				    va_arg(ap, struct p9_qid *);
 
-				errcode = p9pdu_writef(pdu, proto_version, "w",
+				err = p9_buf_writef(buf, proto_version, "w",
 									nwqid);
-				if (!errcode) {
+				if (!err) {
 					int i;
 
 					for (i = 0; i < nwqid; i++) {
-						errcode =
-						    p9pdu_writef(pdu,
+						err =
+						    p9_buf_writef(buf,
 								proto_version,
 								 "Q",
 								 &wqids[i]);
-						if (errcode)
+						if (err)
 							break;
 					}
 				}
@@ -480,7 +448,7 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 				struct p9_iattr_dotl *p9attr = va_arg(ap,
 							struct p9_iattr_dotl *);
 
-				errcode = p9pdu_writef(pdu, proto_version,
+				err = p9_buf_writef(buf, proto_version,
 							"ddugqqqqq",
 							p9attr->valid,
 							p9attr->mode,
@@ -502,33 +470,33 @@ p9pdu_vwritef(struct p9_buffer *pdu, int proto_version, const char *fmt,
 			break;
 		}
 
-		if (errcode)
+		if (err)
 			break;
 	}
 
-	return errcode;
+	return err;
 }
 
-int p9pdu_readf(struct p9_buffer *pdu, int proto_version, const char *fmt, ...)
+int p9_buf_readf(struct p9_buffer *buf, int proto_version, const char *fmt, ...)
 {
 	va_list ap;
 	int ret;
 
 	va_start(ap, fmt);
-	ret = p9pdu_vreadf(pdu, proto_version, fmt, ap);
+	ret = p9_buf_vreadf(buf, proto_version, fmt, ap);
 	va_end(ap);
 
 	return ret;
 }
 
 static int
-p9pdu_writef(struct p9_buffer *pdu, int proto_version, const char *fmt, ...)
+p9_buf_writef(struct p9_buffer *buf, int proto_version, const char *fmt, ...)
 {
 	va_list ap;
 	int ret;
 
 	va_start(ap, fmt);
-	ret = p9pdu_vwritef(pdu, proto_version, fmt, ap);
+	ret = p9_buf_vwritef(buf, proto_version, fmt, ap);
 	va_end(ap);
 
 	return ret;
@@ -536,70 +504,70 @@ p9pdu_writef(struct p9_buffer *pdu, int proto_version, const char *fmt, ...)
 
 int p9stat_read(struct p9_client *clnt, char *buf, size_t len, struct p9_wstat *st)
 {
-	struct p9_buffer fake_pdu;
+	struct p9_buffer msg_buf;
 	int ret;
 
-	fake_pdu.size = len;
-	fake_pdu.capacity = len;
-	fake_pdu.sdata = buf;
-	fake_pdu.offset = 0;
+	msg_buf.size = len;
+	msg_buf.capacity = len;
+	msg_buf.sdata = buf;
+	msg_buf.offset = 0;
 
-	ret = p9pdu_readf(&fake_pdu, clnt->proto_version, "S", st);
+	ret = p9_buf_readf(&msg_buf, clnt->proto_version, "S", st);
 	if (ret) {
-		p9_debug(PROTO, "<<< p9stat_read failed: %d\n", ret);
+		p9_debug(PROTO, "p9stat_read failed: %d\n", ret);
 	}
 
 	return ret;
 }
 
-int p9pdu_prepare(struct p9_buffer *pdu, int8_t type)
+int p9_buf_prepare(struct p9_buffer *buf, int8_t type)
 {
 	int tag = 0;
-	pdu->id = type;
-	//printf("p9pdu_prepare ID%d \n",pdu->id);
+	buf->id = type;
+	//printf("p9_buf_prepare ID%d \n",buf->id);
 
-	return p9pdu_writef(pdu, 0, "dbw", 0, type, tag);
+	return p9_buf_writef(buf, 0, "dbw", 0, type, tag);
 }
 
-int p9pdu_finalize(struct p9_client *clnt, struct p9_buffer *pdu)
+int p9_buf_finalize(struct p9_client *clnt, struct p9_buffer *buf)
 {
-	int size = pdu->size;
+	int size = buf->size;
 	int err;
 
-	pdu->size = 0;
-	err = p9pdu_writef(pdu, 0, "d", size);
-	pdu->size = size;
+	buf->size = 0;
+	err = p9_buf_writef(buf, 0, "d", size);
+	buf->size = size;
 
-	p9_debug(PROTO, ">>> size=%d type: %d tag: %d\n",
-		 pdu->size, pdu->id, pdu->tag);
+	p9_debug(PROTO, "size=%d type: %d tag: %d\n",
+		 buf->size, buf->id, buf->tag);
 
 	return err;
 }
 
-void p9pdu_reset(struct p9_buffer *pdu)
+void p9_buf_reset(struct p9_buffer *buf)
 {
-	pdu->offset = 0;
-	pdu->size = 0;
+	buf->offset = 0;
+	buf->size = 0;
 }
 
 /* Directory entry read with the buf we have. Call this once we have the 
  * buf to parse .*/
-int p9dirent_read(struct p9_client *clnt, char *buf, int start, int len,
+int p9_dirent_read(struct p9_client *clnt, char *buf, int start, int len,
 		  struct dirent *dirent)
 {
-	struct p9_buffer fake_pdu;
+	struct p9_buffer msg_buf;
 	int ret;
 	char *nameptr;
 	struct p9_qid qid;
 	uint16_t le;
-	uint64_t d_off; // NOt used yet/
+	uint64_t d_off;
 
-	fake_pdu.size = len;
-	fake_pdu.capacity = len;
-	fake_pdu.sdata = buf;
-	fake_pdu.offset = start;
+	msg_buf.size = len;
+	msg_buf.capacity = len;
+	msg_buf.sdata = buf;
+	msg_buf.offset = start;
 
-	ret = p9pdu_readf(&fake_pdu, clnt->proto_version, "Qqbs", &qid,
+	ret = p9_buf_readf(&msg_buf, clnt->proto_version, "Qqbs", &qid,
 			  &d_off, &dirent->d_type, &nameptr);
 	if (ret) {
 		p9_debug(PROTO, "<<< p9dirent_read failed: %d\n", ret);
@@ -611,8 +579,7 @@ int p9dirent_read(struct p9_client *clnt, char *buf, int start, int len,
  	dirent->d_namlen = le;
 	free(nameptr, M_TEMP);
 	dirent->d_fileno = (uint32_t)(qid.path >> 32);
-
 out:
-	//printf("fake_pdu.offset :%d %hu\n",fake_pdu.offset,le);
-	return fake_pdu.offset;
+	//printf("fake_buf.offset :%d %hu\n",fake_buf.offset,le);
+	return msg_buf.offset;
 }

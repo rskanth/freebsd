@@ -222,6 +222,7 @@ int virtfs_vget_wrapper
 		*vpp = NULLVP;
 		return (error);
 	}
+	printf("this should be set by now ..%d\n",vp->v_bufobj.bo_bsize);
 
 	/* If we dont have it, create one. */
 	if (virtfs_node == NULL) {
@@ -254,7 +255,7 @@ int virtfs_vget_wrapper
 		return (error);
 
 	if (virtfs_proto_dotl(p9s)) {
-		st = p9_client_getattr_dotl(fid, P9PROTO_STATS_BASIC);
+		//st = p9_client_getattr_dotl(fid, P9PROTO_STATS_BASIC);
         	if (st == NULL) {
 			error = ENOMEM;
 			goto out;
@@ -291,9 +292,10 @@ p9_mount(struct mount *mp)
 	struct virtfs_node *root;
 	int error = EINVAL;
 
-	if (mp->mnt_iosize_max > MAXPHYS)
-		mp->mnt_iosize_max = MAXPHYS;
-
+	/* Since the hardware iosize from the Qemu*/
+	/* How do we get this gneric ? */
+	mp->mnt_iosize_max = 4096;
+	printf("mnt_iosize :%d\n",mp->mnt_iosize_max);
 	/* Allocate and initialize the private mount structure. */
 	vmp = malloc(sizeof (struct virtfs_mount), M_P9MNT, M_WAITOK | M_ZERO);
 	mp->mnt_data = vmp;
@@ -373,10 +375,74 @@ virtfs_root(struct mount *mp, int lkflags, struct vnode **vpp)
 	return (error);
 }
 
+/* Get this working to fix the default sizes */
+
+#if  0
+struct statfs { 
+        uint32_t f_version;             /* structure version number */
+        uint32_t f_type;                /* type of filesystem */
+        uint64_t f_flags;               /* copy of mount exported flags */
+        uint64_t f_bsize;               /* filesystem fragment size */
+        uint64_t f_iosize;              /* optimal transfer block size */
+        uint64_t f_blocks;              /* total data blocks in filesystem */
+        uint64_t f_bfree;               /* free blocks in filesystem */
+        int64_t  f_bavail;              /* free blocks avail to non-superuser */
+        uint64_t f_files;               /* total file nodes in filesystem */
+        int64_t  f_ffree;               /* free nodes avail to non-superuser */
+        uint64_t f_syncwrites;          /* count of sync writes since mount */
+        uint64_t f_asyncwrites;         /* count of async writes since mount */
+        uint64_t f_syncreads;           /* count of sync reads since mount */
+        uint64_t f_asyncreads;          /* count of async reads since mount */
+        uint64_t f_spare[10];           /* unused spare */
+        uint32_t f_namemax;             /* maximum filename length */
+        uid_t     f_owner;              /* user that mounted the filesystem */
+        fsid_t    f_fsid;               /* filesystem id */
+        char      f_charspare[80];          /* spare string space */
+        char      f_fstypename[MFSNAMELEN]; /* filesystem type name */
+        char      f_mntfromname[MNAMELEN];  /* mounted filesystem */
+        char      f_mntonname[MNAMELEN];    /* directory on which mounted */
+};
+#endif
+
 static int
-virtfs_statfs(struct mount *mp, struct statfs *sbp)
+virtfs_statfs(struct mount *mp, struct statfs *buf)
 {
-	return 0;
+	struct virtfs_mount *vmp = VFSTOP9(mp);
+	struct virtfs_node *np = &vmp->virtfs_session.rnp;
+        struct p9_statfs statfs;
+        int res;
+
+	if (np->vfid == NULL) {
+		return EFAULT;
+	}
+
+	res = p9_client_statfs(np->vfid, &statfs);
+
+	if (res == 0) {
+		buf->f_type = statfs.type;
+
+		if (statfs.bsize > 4096)
+			buf->f_bsize = 4096;
+		else
+			buf->f_bsize = statfs.bsize;
+		
+		buf->f_iosize = buf->f_bsize;
+		printf("buf_f_iosize :%d\n",buf->f_bsize);
+		buf->f_blocks = statfs.blocks;
+		buf->f_bfree = statfs.bfree;
+		buf->f_bavail = statfs.bavail;
+		buf->f_files = statfs.files;
+		buf->f_ffree = statfs.ffree;
+		//buf->f_fsid.val[0] = statfs.fsid & 0xFFFFFFFFUL;
+		//buf->f_fsid.val[1] = (statfs.fsid >> 32) & 0xFFFFFFFFUL;
+        }
+	else {
+		// making the logical block size as PAGE_SIZE ?
+		buf->f_bsize = 4096;
+		buf->f_iosize = buf->f_bsize;   /* XXX */
+	}
+
+        return 0;
 }
 
 static int

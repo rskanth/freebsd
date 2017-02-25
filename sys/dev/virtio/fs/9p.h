@@ -160,6 +160,21 @@ struct p9_qid {
 	uint64_t path;
 };
 
+
+/* FS information stat structure */
+struct p9_statfs {
+	uint32_t type;
+	uint32_t bsize;
+	uint64_t blocks;
+	uint64_t bfree;
+	uint64_t bavail;
+ 	uint64_t files;
+	uint64_t ffree;
+	uint64_t fsid;
+	uint32_t namelen;
+};
+
+
 /* This should be in sync with 9p's V9fsStat */
 struct p9_wstat {
 	uint16_t size;
