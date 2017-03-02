@@ -137,45 +137,6 @@ out:
 /* For the root vnode's vnops. */
 extern struct vop_vector virtfs_vnops;
 
-#if 0 
-struct virtfs_mount {
-	int p9_debuglevel;
-	struct virtfs_session virtfs_session;
-	struct mount *virtfs_mount;
-	char p9_hostname[256];
-}
-/* A Plan9 node. */
-struct virtfs_node {
-        uint32_t p9n_fid;
-        uint32_t p9n_ofid;
-        uint32_t p9n_opens;
-        struct virtfs_qid vqid;
-        struct vnode *v_node;
-        struct virtfs_session *p9n_session;
-};
-
-#define MAXUNAMELEN     32
-struct virtfs_session {
-
-     unsigned char flags;
-     unsigned char nodev;
-     unsigned short debug;
-     unsigned int afid;
-     unsigned int cache;
-     // These look important .
-     struct mount *p9s_mount;
-     struct virtfs_node p9s_rootnp;
-     char *uname;        /* user name to mount as */
-     char *aname;        /* name of remote hierarchy being mounted */
-     unsigned int maxdata;   /* max data for client interface */
-     kuid_t dfltuid;     /* default uid/muid for legacy support */
-     kgid_t dfltgid;     /* default gid for legacy support */
-     kuid_t uid;     /* if ACCESS_SINGLE, the uid that has access */
-     struct p9_client *clnt; /* 9p client */
-     struct list_head slist; /* list of sessions registered with v9fs */
-     mtx_lock p9s_lock;
-
-#endif
 /* This is a vfs ops routiune so defining it here instead of vnops. This 
    needs some fixing(a wrapper moslty when we need create to work. Ideally
    it should call this, initialize the virtfs_node and create the fids and qids
@@ -194,6 +155,7 @@ int virtfs_vget_wrapper
 	uint32_t ino;
 	struct p9_stat_dotl *st = NULL;
 	int error;
+	struct virtfs_inode *inode;
 
 	td = curthread;
 	vmp = VFSTOP9(mp);
@@ -204,9 +166,7 @@ int virtfs_vget_wrapper
 
 	error = vfs_hash_get(mp, ino, flags, td, vpp, NULL, NULL);
 	if (error || *vpp != NULL)
-	{
 		return (error);
-	}
 
 	/*
 	 * We must promote to an exclusive lock for vnode creation.  This
@@ -228,11 +188,13 @@ int virtfs_vget_wrapper
 	if (virtfs_node == NULL) {
 		// Make the virtfs_node as a zone allocator ? 
 		virtfs_node =  uma_zalloc(virtfs_node_zone, M_WAITOK | M_ZERO);
+		inode = &virtfs_node->inode;
 		vp->v_data = virtfs_node;
 		/* This should be initalized in the caller of this routine */
 		virtfs_node->vfid = fid;  /* Nodes fid*/
 		virtfs_node->v_node = vp; /* map the vnode to ondisk*/
 		virtfs_node->virtfs_ses = p9s; /* Map the current session */
+		SET_LINKS(inode);
 	}
 	else {
 		vp->v_data = virtfs_node;
@@ -240,7 +202,13 @@ int virtfs_vget_wrapper
 		virtfs_node->v_node = vp; /* map the vnode to ondisk*/
 		vp->v_type = VDIR; /* root vp is a directory */
 		vp->v_vflag |= VV_ROOT;
+		inode = &virtfs_node->inode;
+		SET_LINKS(inode);
 	}
+	VIRTFS_LOCK(p9s);
+	/* Add the virtfs_node to the list for cleanup later.*/
+	STAILQ_INSERT_TAIL(&p9s->virt_node_list, virtfs_node, virtfs_node_next);
+	VIRTFS_UNLOCK(p9s);
 
 	lockmgr(vp->v_vnlock, LK_EXCLUSIVE, NULL);
 	error = insmntque(vp, mp);
@@ -376,33 +344,6 @@ virtfs_root(struct mount *mp, int lkflags, struct vnode **vpp)
 }
 
 /* Get this working to fix the default sizes */
-
-#if  0
-struct statfs { 
-        uint32_t f_version;             /* structure version number */
-        uint32_t f_type;                /* type of filesystem */
-        uint64_t f_flags;               /* copy of mount exported flags */
-        uint64_t f_bsize;               /* filesystem fragment size */
-        uint64_t f_iosize;              /* optimal transfer block size */
-        uint64_t f_blocks;              /* total data blocks in filesystem */
-        uint64_t f_bfree;               /* free blocks in filesystem */
-        int64_t  f_bavail;              /* free blocks avail to non-superuser */
-        uint64_t f_files;               /* total file nodes in filesystem */
-        int64_t  f_ffree;               /* free nodes avail to non-superuser */
-        uint64_t f_syncwrites;          /* count of sync writes since mount */
-        uint64_t f_asyncwrites;         /* count of async writes since mount */
-        uint64_t f_syncreads;           /* count of sync reads since mount */
-        uint64_t f_asyncreads;          /* count of async reads since mount */
-        uint64_t f_spare[10];           /* unused spare */
-        uint32_t f_namemax;             /* maximum filename length */
-        uid_t     f_owner;              /* user that mounted the filesystem */
-        fsid_t    f_fsid;               /* filesystem id */
-        char      f_charspare[80];          /* spare string space */
-        char      f_fstypename[MFSNAMELEN]; /* filesystem type name */
-        char      f_mntfromname[MNAMELEN];  /* mounted filesystem */
-        char      f_mntonname[MNAMELEN];    /* directory on which mounted */
-};
-#endif
 
 static int
 virtfs_statfs(struct mount *mp, struct statfs *buf)

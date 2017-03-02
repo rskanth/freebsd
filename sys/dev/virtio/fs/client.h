@@ -62,7 +62,7 @@ struct p9_fid {
 	uint32_t fid;
 	int mode;        // Open file mode.
 	struct p9_qid qid;
-	uint32_t iounit;
+	uint32_t mtu;
 	uid_t uid;      // this is the uid for this fid.
 };
 

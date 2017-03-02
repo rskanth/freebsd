@@ -1,0 +1,55 @@
+@@ -108,7 +110,7 @@
+                req->tc = p9_buffer_alloc(alloc_msize);
+        if (!req->rc)
+                req->rc = p9_buffer_alloc(alloc_msize);
+-       
++
+        if (req->tc == NULL || req->rc == NULL) 
+                return NULL;
+        return req;
+@@ -166,6 +167,7 @@
+        if (req == NULL)
+                return NULL;
+ 
++       /* Call into the transport for submission. */
+        err = c->trans_mod->request(c, req);
+ 
+        if (err < 0) {
+@@ -174,8 +176,8 @@
+                goto reterr;
+        }
+ 
+-       /* Wait for the response */
+-       err = msleep(&req, &req_mtx,
++       /* Wait for the response. it will be woken up in the intr ctx */
++       err = msleep(&req, P9REQ_MTX(c),
+                        PRIBIO, "p9_virtio", 0);
+ 
+        if (req->status == REQ_STATUS_ERROR) {
+@@ -304,7 +306,6 @@
+        clnt->trans_mod = NULL;
+        clnt->trans = NULL;
+ 
+-
+        /* Parse should have set trans_mod */
+        err = p9_parse_opts(mp, clnt);
+        if (err < 0)
+@@ -339,12 +340,16 @@
+                goto bail_out;
+        }
+ 
++       /* Init the client lock */
++       P9CLNT_INIT(clnt);
++       /* Init the request lock for submission */
++       P9REQ_INIT(clnt);
++
++       /* Get the version , The 1st request being sent */
+        err = p9_client_version(clnt);
+        if (err)
+                goto bail_out;
+ 
+-       /* Init the lock */
+-       P9CLNT_INIT(clnt);
+ 
+        return clnt;
+ 

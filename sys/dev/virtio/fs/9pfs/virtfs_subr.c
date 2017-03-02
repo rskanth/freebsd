@@ -51,7 +51,7 @@ __FBSDID("$FreeBSD$");
 #include "../9p.h"
 #include "virtfs.h"
 
-int p9_debug_level = 0xFFFF;
+int p9_debug_level = 0; //0xFFFF;
 int
 virtfs_proto_dotl(struct virtfs_session *vses)
 {
@@ -61,50 +61,52 @@ virtfs_proto_dotl(struct virtfs_session *vses)
 struct p9_fid *
 virtfs_init_session(struct mount *mp)
 {
-    struct p9_fid *fid;
-    struct virtfs_session *vses;
-    struct virtfs_mount *virtmp;
+	struct p9_fid *fid;
+	struct virtfs_session *vses;
+	struct virtfs_mount *virtmp;
 
-    virtmp = mp->mnt_data;
-    vses = &virtmp->virtfs_session;
-    vses->uid = 0;
+	virtmp = mp->mnt_data;
+	vses = &virtmp->virtfs_session;
+	vses->uid = 0;
 
-    vses->clnt = p9_client_create(mp);
+	vses->clnt = p9_client_create(mp);
 
-    if (vses->clnt == NULL) {
-        p9_debug(SUBR, "problem initializing 9p client\n");
-        goto fail;
-    }
-    /* Find the client version and cache the copy. We will use this copy 
-     * throughout FS layer.*/
-    if (p9_is_proto_dotl(vses->clnt)) {
-        vses->flags |= VIRTFS_PROTO_2000L;
+	if (vses->clnt == NULL) {
+		p9_debug(SUBR, "problem initializing 9p client\n");
+		goto fail;
+	}
+	/* Find the client version and cache the copy. We will use this copy 
+	* throughout FS layer.*/
+	if (p9_is_proto_dotl(vses->clnt)) {
+		vses->flags |= VIRTFS_PROTO_2000L;
 
-    } else if (p9_is_proto_dotu(vses->clnt)) {
-        vses->flags |= VIRTFS_PROTO_2000U;
-    }
+	} else if (p9_is_proto_dotu(vses->clnt)) {
+		vses->flags |= VIRTFS_PROTO_2000U;
+	}
 
-    /* Attach with the backend host*/
-    fid = p9_client_attach(vses->clnt);
+	/* Attach with the backend host*/
+	fid = p9_client_attach(vses->clnt);
 
-    if (fid == NULL) {
+	if (fid == NULL) {
+		p9_debug(SUBR, "cannot attach\n");
+		goto fail;
+	}
+	p9_debug(SUBR, "Attach successful fid :%p\n",fid);
 
-        p9_debug(SUBR, "cannot attach\n");
-        goto fail;
-    }
-    p9_debug(SUBR, "Attach successful fid :%p\n",fid);
+	fid->uid = vses->uid;
 
-    fid->uid = vses->uid;
-    p9_debug(SUBR, "INIT session successful\n");
+	/* init the node list for the session */
+	STAILQ_INIT(&vses->virt_node_list);
+	VIRTFS_LOCK_INIT(vses);
 
-    return fid;
+	p9_debug(SUBR, "INIT session successful\n");
 
+	return fid;
 fail:
+	if (vses->clnt)
+		p9_client_destroy(vses->clnt);
 
-   if (vses->clnt)
-	p9_client_destroy(vses->clnt);
-
-   return NULL;
+	return NULL;
 }
 
 /* Call from unmount. Close the session. */
@@ -113,11 +115,23 @@ virtfs_close_session(struct mount *mp)
 {
 	struct virtfs_session *vses;
 	struct virtfs_mount *vmp;
+	struct virtfs_node *p;
 
   	vmp = VFSTOP9(mp);
     	vses = &vmp->virtfs_session;
 
+	/* Cleanup the leftover virtfs_nodes in this session. This could be all
+	 * removed, unlinked virtfs_nodes on the host. */
+	VIRTFS_LOCK(vses);
+	STAILQ_FOREACH(p, &vses->virt_node_list, virtfs_node_next) {
+
+		STAILQ_REMOVE(&vses->virt_node_list, p, virtfs_node, virtfs_node_next);
+		p9_fid_destroy(p->vfid);
+		virtfs_cleanup(p);
+	}
+        VIRTFS_UNLOCK(vses);
 	/* Clean up the clnt structure. */
 	p9_client_destroy(vses->clnt);
+	VIRTFS_LOCK_DESTROY(vses);
 	p9_debug(SUBR, " Clean close session .\n");
 }

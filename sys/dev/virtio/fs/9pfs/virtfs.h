@@ -28,13 +28,6 @@
 #ifndef __VIRTFS__
 #define __VIRTFS__
 
-enum v9s_state {
-	V9S_INIT,
-	V9S_RUNNING,
-	V9S_CLOSING,
-	V9S_CLOSED,
-};
-
 struct virtfs_session;
 
 /* The in memory representation of the on disk inode. Save the current 
@@ -54,11 +47,13 @@ struct virtfs_inode {
         char *i_uid;
         char *i_gid;
         char *i_muid;
-        char *i_extension;        /* 9p2000.u extensions */
+        char *i_extension;       /* 9p2000.u extensions */
         uid_t n_uid;            /* 9p2000.u extensions */
         gid_t n_gid;            /* 9p2000.u extensions */
         uid_t n_muid;           /* 9p2000.u extensions */
-};               
+	/* bookkeeping info on the client. */
+	uint16_t i_links_count;  /*number of references to the inode*/
+};
 
 /* A Plan9 node. */
 struct virtfs_node {
@@ -69,6 +64,7 @@ struct virtfs_node {
 	struct vnode *v_node; /* vnode for this fs_node. */
 	struct virtfs_inode inode; /* This represents the ondisk in mem inode */
 	struct virtfs_session *virtfs_ses; /*  Session_ptr for this node */
+	STAILQ_ENTRY(virtfs_node) virtfs_node_next;
 };
 
 #define VTON(vp) vp->v_data
@@ -78,16 +74,38 @@ struct virtfs_node {
 #define QEMU_DIRENTRY_SZ 25
 
 #define	MAXUNAMELEN	32
+#define SET_LINKS(inode)  \
+	do { inode->i_links_count = 1; \
+	}while(0); \
+
+#define INCR_LINKS(inode)  \
+	do { inode->i_links_count++; \
+	}while(0); \
+
+#define DECR_LINKS(inode)  \
+	do { inode->i_links_count--; \
+	}while(0); \
+
+#define CLR_LINKS(inode)  \
+	do { inode->i_links_count = 0; \
+	}while(0); \
+
+#define VIRTFS_MTX(_sc) &(_sc)->virtfs_mtx
+#define VIRTFS_LOCK(_sc) mtx_lock(VIRTFS_MTX(_sc))
+#define VIRTFS_UNLOCK(_sc) mtx_unlock(VIRTFS_MTX(_sc))
+#define VIRTFS_LOCK_INIT(_sc) mtx_init(VIRTFS_MTX(_sc), "VIRTFS session chain lock", NULL, MTX_DEF)
+#define VIRTFS_LOCK_DESTROY(_sc) mtx_destroy(VIRTFS_MTX(_sc))
 
 /* Session structure for the FS */
 struct virtfs_session {
 
-     unsigned char flags; /* these flags for the session */
-     struct mount *virtfs_mount; /* mount point */
-     struct virtfs_node rnp; /* root virtfss_node for this session */
-     uid_t uid;     /* the uid that has access */
-     struct p9_client *clnt; /* 9p client */
-     struct mtx virtfs_lock;
+	unsigned char flags; /* these flags for the session */
+	struct mount *virtfs_mount; /* mount point */
+	struct virtfs_node rnp; /* root virtfss_node for this session */
+	uid_t uid;     /* the uid that has access */
+	struct p9_client *clnt; /* 9p client */
+	struct mtx virtfs_mtx; /* mutex used for guarding the chain.*/
+	STAILQ_HEAD( ,virtfs_node) virt_node_list; /* All virtfs_nodes in this session*/
 };
 
 struct virtfs_mount {
@@ -113,5 +131,6 @@ int virtfs_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp);
 int virtfs_vget_wrapper(struct mount *mp, struct virtfs_node *np, int flags,
 	struct p9_fid *fid, struct vnode **vpp);
 void dispose_node(struct virtfs_node **node);
+int virtfs_cleanup(struct virtfs_node *vp);
 
 #endif /* __VIRTFS__ */

@@ -63,7 +63,7 @@ inline int p9_is_proto_dotu(struct p9_client *clnt)
 	return clnt->proto_version == p9_proto_2000u;
 }
 
-static int
+static int 
 p9_parse_opts(struct mount  *mp, struct p9_client *clnt)
 {
 	char *trans;
@@ -78,9 +78,9 @@ p9_parse_opts(struct mount  *mp, struct p9_client *clnt)
         	return (error);
 
 	p9_debug(TRANS, " Attaching to the %s transport \n",trans);
-	/*
-         * This will be moved to mod where we can have multiple entries in the
-	 * table to search for and return the correct pointer. For now just get
+	/* 
+         * This will be moved to mod where we can have multiple entries in the 
+	 * table to search for and return the correct pointer. For now just get 
          * the default virtio_ops.
 	 */
     	clnt->trans_mod = p9_get_default_trans();
@@ -208,7 +208,7 @@ p9_client_check_return(struct p9_client *c,
         }
 	/* No error , We are done with the preprocessing. Return to the caller
 	 * and process the actual data.
-	 */
+	 */ 
         if (req->rc->id != P9PROTO_RERROR)
                 return 0;
 
@@ -271,11 +271,11 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 
 	if (err)
 		goto error;
-	/* Before we return the req (receive buffer and process it)
+	/* Before we return the req (receive buffer and process it) 
          * we pre process the header to fill in the rc before calling
 	 * into the protocol infra to analyze the data.
 	 */
-	err = p9_client_check_return(c, req);
+	err = p9_client_check_return(c, req);	
 	if (err)
 		goto error;
 
@@ -586,7 +586,7 @@ error:
 }
 
 /* oldfid is the fid of the directory. We need to search the component name
- * present in wnames
+ * present in wnames 
  */
 struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 		char **wnames, int clone)
@@ -641,7 +641,7 @@ struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 	}
 
 	for (count = 0; count < nwqids; count++)
-		p9_debug(TRANS, "<<<     [%d] %x.%llx.%x\n",
+		p9_debug(TRANS, "[%d] %x.%llx.%x\n",
 			count, wqids[count].type,
 			(unsigned long long)wqids[count].path,
 			wqids[count].version);
@@ -673,7 +673,7 @@ int p9_client_open(struct p9_fid *fid, int mode)
 	struct p9_client *clnt;
 	struct p9_req_t *req;
 	struct p9_qid qid;
-	int iounit = 0;
+	int mtu = 0;
 
 	clnt = fid->clnt;
 	p9_debug(TRANS, "%s fid %d mode %d\n",
@@ -691,18 +691,18 @@ int p9_client_open(struct p9_fid *fid, int mode)
 		return ENOMEM;
 	}
 
-	err = p9_buf_readf(req->rc, clnt->proto_version, "Qd", &qid, &iounit);
+	err = p9_buf_readf(req->rc, clnt->proto_version, "Qd", &qid, &mtu);
 	if (err) {
 		err = EINVAL;
 		goto out;
 	}
 
-	p9_debug(TRANS, " %s qid %x.%llx.%x iounit %x\n",
+	p9_debug(TRANS, " %s qid %x.%llx.%x mtu %x\n",
 		p9_is_proto_dotl(clnt) ? "RLOPEN" : "ROPEN",  qid.type,
-		(unsigned long long)qid.path, qid.version, iounit);
+		(unsigned long long)qid.path, qid.version, mtu);
 
 	fid->mode = mode;
-	fid->iounit = iounit; // Max allowable transfer size.
+	fid->mtu = mtu;
 	/* Copy the qid into the opened fid .*/
 	memcpy(&fid->qid, &qid, sizeof(qid));
 out:
@@ -715,7 +715,7 @@ struct p9_wstat *p9_client_stat(struct p9_fid *fid)
 	int err = 0;
 	struct p9_client *clnt;
 	struct p9_wstat *stat;
-	struct p9_req_t *req = NULL;
+	struct p9_req_t *req;
 	uint16_t ignored;
 
 	stat = malloc(sizeof(struct p9_wstat) ,M_TEMP,  M_WAITOK | M_ZERO);
@@ -798,8 +798,7 @@ error:
 	return err;
 }
 
-/* Only support for readdir for now .*/
-int
+int 
 p9_client_readdir(struct p9_fid *fid, char *data, uint64_t offset, uint32_t count)
 {
 	int err;
@@ -850,7 +849,7 @@ p9_client_read(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 	p9_debug(TRANS, "TREAD fid %d offset %llu %u\n",
 		   fid->fid, (unsigned long long) offset, count);
 
-	rsize = fid->iounit;
+	rsize = fid->mtu;
         if (!rsize || rsize > clnt->msize)
                   rsize = clnt->msize;
 
@@ -893,7 +892,7 @@ p9_client_read(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 error:
 	if (req)
 		p9_free_req(req);
-	return error;
+	return error;	
 }
 
 int
@@ -907,7 +906,7 @@ p9_client_write(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 
 	p9_debug(TRANS, " TWRITE fid %d offset %llu  %u\n",
 				fid->fid, (unsigned long long) offset, count);
-	rsize = fid->iounit;
+	rsize = fid->mtu;
         if (!rsize || rsize > clnt->msize)
                   rsize = clnt->msize;
 
@@ -952,7 +951,7 @@ error:
 	return err;
 }
 
-int
+int 
 p9_client_file_create(struct p9_fid *fid, char *name, uint32_t perm, int mode,
                      char *extension)
 {
@@ -960,7 +959,7 @@ p9_client_file_create(struct p9_fid *fid, char *name, uint32_t perm, int mode,
         struct p9_client *clnt;
         struct p9_req_t *req;
         struct p9_qid qid;
-	int iounit;
+	int mtu;
 
         p9_debug(TRANS, "TCREATE fid %d name %s perm %d mode %d\n",
                                                 fid->fid, name, perm, mode);
@@ -977,17 +976,17 @@ p9_client_file_create(struct p9_fid *fid, char *name, uint32_t perm, int mode,
 		goto error;
 	}
 
-        err = p9_buf_readf(req->rc, clnt->proto_version, "Qd", &qid, &iounit);
+        err = p9_buf_readf(req->rc, clnt->proto_version, "Qd", &qid, &mtu);
 
 	if (err)
 		goto error;
 
-        p9_debug(TRANS, " RCREATE qid %x.%llx.%x iounit %x\n",
+        p9_debug(TRANS, "RCREATE qid %x.%llx.%x mtu %x\n",
                                 qid.type,
                                 (unsigned long long)qid.path,
-                                qid.version, iounit);
+                                qid.version, mtu);
         fid->mode = mode;
-        fid->iounit = iounit;
+        fid->mtu = mtu;
 
 error:
 	if (req)

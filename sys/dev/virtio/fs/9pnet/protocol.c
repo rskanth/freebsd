@@ -559,8 +559,9 @@ int p9_dirent_read(struct p9_client *clnt, char *buf, int start, int len,
 	int ret;
 	char *nameptr;
 	struct p9_qid qid;
-	uint16_t le;
+	uint16_t sle;
 	uint64_t d_off;
+	uint64_t path = qid.path + 2;
 
 	msg_buf.size = len;
 	msg_buf.capacity = len;
@@ -574,11 +575,16 @@ int p9_dirent_read(struct p9_client *clnt, char *buf, int start, int len,
 		goto out;
 	}
 
-	le = strlen(nameptr);
-	strncpy(dirent->d_name, nameptr, le);
- 	dirent->d_namlen = le;
+	sle = strlen(nameptr);
+	strncpy(dirent->d_name, nameptr, sle);
+ 	dirent->d_namlen = sle;
 	free(nameptr, M_TEMP);
-	dirent->d_fileno = (uint32_t)(qid.path >> 32);
+
+        if (sizeof(ino_t) == sizeof(path))
+		memcpy(&dirent->d_fileno, &path, sizeof(ino_t));
+        else
+		dirent->d_fileno = (ino_t) (path ^ (path >> 32));
+
 out:
 	//printf("fake_buf.offset :%d %hu\n",fake_buf.offset,le);
 	return msg_buf.offset;

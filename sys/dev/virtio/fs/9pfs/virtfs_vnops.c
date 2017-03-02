@@ -39,7 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/stat.h>
 
 #include <sys/types.h>
-#include <sys/fcntl.h>
+#include <fcntl.h>
 #include "virtfs_proto.h"
 #include "virtfs.h"
 #include "../client.h"
@@ -54,7 +54,7 @@ __FBSDID("$FreeBSD$");
 struct vop_vector virtfs_vnops;
 uint32_t convert_to_p9_mode(uint32_t mode);
 
-static int
+int
 virtfs_cleanup(struct virtfs_node *node)
 {
 	struct vnode *vp = NTOV(node);
@@ -75,6 +75,7 @@ virtfs_reclaim(struct vop_reclaim_args *ap)
 {
         struct vnode *vp = ap->a_vp;
         struct virtfs_node *virtfs_node = VTON(vp);
+	struct virtfs_session *ses = virtfs_node->virtfs_ses;
 
         p9_debug(VOPS, "%s: vp:%p node:%p\n", __func__, vp, virtfs_node);
 	if (virtfs_node == NULL) return 0;
@@ -82,7 +83,12 @@ virtfs_reclaim(struct vop_reclaim_args *ap)
 	if (virtfs_node->vfid)
 		p9_client_clunk(virtfs_node->vfid);
 
+	/* Remove the virtfs_node from the list before we cleanup.*/
+	VIRTFS_LOCK(ses);
+	STAILQ_REMOVE(&ses->virt_node_list, virtfs_node, virtfs_node, virtfs_node_next);
+	VIRTFS_UNLOCK(ses);
 	virtfs_cleanup(virtfs_node);
+
         return (0);
 }
 
@@ -113,7 +119,7 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 
 		/* client_walk is equivalent to searching a component name in a directory(fid)
 		 * here. If newfid is returned, we have found an entry for this component name
-		 * so, go and create the rest of the vnode infra(vget_wrapper) for the returned
+		 * so, go and create the rest of the vnode infra(vget_wrapper) for the returned 
 		 * newfid */
 
 		newfid = p9_client_walk(dnp->vfid,
@@ -150,7 +156,7 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
                                         cnp->cn_flags |= SAVENAME;
                                         error = EJUSTRETURN;
                                 }
-                        }
+			}
 		}
 	}
 	/* Store the result the the cache if MAKEENTRY is specified in flags */
@@ -197,27 +203,29 @@ create_wrapper(struct virtfs_node *dir_node,
                 goto out;
         }
 
-	/*
-	 * Do the lookup part and add the vnode, virtfs_node. Note that vpp
-	 * is filled in here.
-	 */
+	/* If its not hardlink only then do the walk, else we are done. */
+	if (!(perm & P9PROTO_DMLINK)) {
+		/*
+		 * Do the lookup part and add the vnode, virtfs_node. Note that vpp
+		 * is filled in here.
+		 */
 
-	newfid = p9_client_walk(dir_node->vfid, 1, &name, 1);
-	if (newfid != NULL) {
-			err = virtfs_vget_wrapper(mp, NULL, cnp->cn_lkflags, newfid, vpp);
-			if (err)
-				goto out;
+		newfid = p9_client_walk(dir_node->vfid, 1, &name, 1);
+		if (newfid != NULL) {
+				err = virtfs_vget_wrapper(mp, NULL, cnp->cn_lkflags, newfid, vpp);
+				if (err)
+					goto out;
+		}
+		else {
+			/* Not found return NOENTRY.*/
+			err = ENOENT;
+			goto out;
+		}
+
+		if ((cnp->cn_flags & MAKEENTRY) != 0)
+			cache_enter(NTOV(dir_node), *vpp, cnp);
 	}
-	else {
-		/* Not found return NOENTRY.*/
-		err = ENOENT;
-		goto out;
-	}
-
-        if ((cnp->cn_flags & MAKEENTRY) != 0)
-                cache_enter(NTOV(dir_node), *vpp, cnp);
-
-        p9_debug(VOPS, "created file under vp %p node %p fid %ld\n", *vpp, dir_node,
+        p9_debug(VOPS, "created file under vp %p node %p fid %d\n", *vpp, dir_node,
             (uintmax_t)dir_node->vfid->fid);
 	// Clunk the open ofid.
 	if (ofid) {
@@ -244,6 +252,7 @@ virtfs_create(struct vop_create_args *ap)
         struct componentname *cnp = ap->a_cnp;
         uint16_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
         struct virtfs_node *dir_node = VTON(dvp);
+	struct virtfs_inode *inode = &dir_node->inode;
 	uint32_t perm;
         int ret = 0;
 
@@ -252,6 +261,9 @@ virtfs_create(struct vop_create_args *ap)
         perm = convert_to_p9_mode(mode);
 
         ret = create_wrapper(dir_node, cnp, NULL, perm, P9PROTO_ORDWR, vpp);
+	if (ret == 0) {
+		INCR_LINKS(inode);
+	}
 
 	return ret;
 }
@@ -264,6 +276,7 @@ virtfs_mkdir(struct vop_mkdir_args *ap)
         struct componentname *cnp = ap->a_cnp;
         uint16_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
         struct virtfs_node *dir_node = VTON(dvp);
+	struct virtfs_inode *inode = &dir_node->inode;
 	uint32_t perm;
         int ret = 0;
 
@@ -272,16 +285,34 @@ virtfs_mkdir(struct vop_mkdir_args *ap)
         perm = convert_to_p9_mode(mode | S_IFDIR);
 
         ret = create_wrapper(dir_node, cnp, NULL, perm, P9PROTO_ORDWR, vpp);
-
+	if (ret == 0)
+		INCR_LINKS(inode);
 	return ret;
 }
 
 static int
 virtfs_mknod(struct vop_mknod_args *ap)
 {
-	p9_debug(VOPS, "mknod");
+	struct vnode *dvp = ap->a_dvp;
+        struct vnode **vpp = ap->a_vpp;
+        struct componentname *cnp = ap->a_cnp;
+        uint16_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
+        struct virtfs_node *dir_node = VTON(dvp);
+	struct virtfs_inode *inode = &dir_node->inode;
+	uint32_t perm;
+        int ret = 0;
 
-	return 0;
+        p9_debug(VOPS, "%s: dvp %p\n", __func__, dvp);
+
+        perm = convert_to_p9_mode(mode);
+
+        ret = create_wrapper(dir_node, cnp, NULL, perm, P9PROTO_OREAD, vpp);
+
+	if (ret == 0) {
+		INCR_LINKS(inode);
+	}
+
+	return ret;
 }
 
 static int virtfs_uflags_mode(int uflags, int extended)
@@ -498,6 +529,7 @@ virtfs_getattr(struct vop_getattr_args *ap)
         vap->va_gid = inode->n_gid;
         vap->va_fsid = vp->v_mount->mnt_stat.f_fsid.val[0];
         vap->va_size = inode->i_size;
+	vap->va_nlink = inode->i_links_count;
 	vap->va_blocksize = 512;
         vap->va_gen = 0;
         vap->va_filerev = 0;
@@ -539,7 +571,7 @@ dump_stat(struct p9_wstat *stat)
 	printf("stat->gid :%s \n",stat->gid);
 	printf("stat->n_uid :%u \n",stat->n_uid);
 	printf("stat->n_gid :%u \n",stat->n_gid);
-}
+	}
 #endif
 
 static int
@@ -576,12 +608,13 @@ convert_to_p9_mode(uint32_t mode)
 		res |= P9PROTO_DMNAMEDPIPE;
 
 	// Is the reason for the red file ?
-        if ((mode & S_ISUID) == S_ISUID)
+        /*if ((mode & S_ISUID) == S_ISUID)
                res |= P9PROTO_DMSETUID;
         if ((mode & S_ISGID) == S_ISGID)
                 res |= P9PROTO_DMSETGID;
         if ((mode & S_ISVTX) == S_ISVTX)
                 res |= P9PROTO_DMSETVTX;
+	*/
         return res;
 }
 
@@ -630,6 +663,7 @@ virtfs_stat_vnode_u(struct p9_wstat *stat, struct vnode *vp)
 	inode->i_uid = stat->uid; /* Make sure you copy the numeric */
 	inode->i_gid = stat->gid;
 	inode->i_muid = stat->muid;
+	SET_LINKS(inode);
 	mode = virtfs_mode_to_generic(ses, stat);
 	mode |= (inode->i_mode & ~ALLPERMS);
 	inode->i_mode = mode;
@@ -824,7 +858,7 @@ virtfs_write(struct vop_write_args *ap)
 
 		/* Copy m_size bytes from the uio */
 		ret = p9_client_write(node->vofid, offset, count, clnt->io_buffer);
-	        p9_debug(VOPS, "INNER LOOP virtfs_write called %#zx at %#jx\n",
+	        p9_debug(VOPS, "virtfs_write called %#zx at %#jx\n",
             		uio->uio_resid, (uintmax_t)uio->uio_offset);
 
 		offset += ret;
@@ -868,6 +902,11 @@ virtfs_remove(struct vop_remove_args *ap)
 {
 	struct vnode *vp = ap->a_vp;
         struct virtfs_node *node = VTON(vp);
+	struct virtfs_inode *inode = &node->inode;
+	struct vnode *dvp = ap->a_dvp;
+        struct virtfs_node *dir_node = VTON(dvp);
+	struct virtfs_inode *dir_ino = &dir_node->inode;
+
 	int ret = 0;
 
         p9_debug(VOPS, "%s: vp %p node %p \n",
@@ -878,6 +917,11 @@ virtfs_remove(struct vop_remove_args *ap)
 
         ret = remove_wrapper(node);
 
+	if (ret == 0) {
+		CLR_LINKS(inode);
+		DECR_LINKS(dir_ino);
+	}
+
         return (ret);
 }
 
@@ -886,40 +930,129 @@ virtfs_rmdir(struct vop_rmdir_args *ap)
 {
 	struct vnode *vp = ap->a_vp;
         struct virtfs_node *node = VTON(vp);
+	struct virtfs_inode *inode = &node->inode;
+        struct vnode *dvp = ap->a_dvp;
+        struct virtfs_node *dir_node = VTON(dvp);
+        struct virtfs_inode *dir_ino = &dir_node->inode;
 	int ret = 0;
 
         p9_debug(VOPS, "%s: vp %p node %p \n",
             __func__, vp, node);
 
         ret = remove_wrapper(node);
+	if (ret == 0) {
+		CLR_LINKS(inode);
+		DECR_LINKS(dir_ino);
+	}
 
         return (ret);
 }
 
+/* Hard link */
+#if 0
 static int
 virtfs_link(struct vop_link_args *ap)
 {
-	return 0;
+	struct vnode *tdvp = ap->a_tdvp;
+        struct vnode *vp = ap->a_vp;
+        struct componentname *cnp = ap->a_cnp;
+        int ret = 0;
+
+        p9_debug(vops, "%s: tdvp %p\n", __func__, tdvp);
+
+        ret = create_wrapper(dir_node, cnp, NULL, P9PROTO_DMLINK, P9PROTO_OREAD, &vp);
+
+	      int retval;
+        struct p9_fid *oldfid;
+
+        p9_debug(P9_DEBUG_VFS, " %lu,%pd,%pd\n",
+                 dir->i_ino, dentry, old_dentry);
+
+        oldfid = p9_client_walk(old_dentry);                                              
+        if (IS_ERR(oldfid))                                                                                        
+                return PTR_ERR(oldfid); 
+ 
+        sprintf(name, "%d\n", oldfid->fid);                                                                        
+        retval = v9fs_vfs_mkspecial(dir, dentry, P9_DMLINK, name);                                                 
+        if (!retval) {
+                v9fs_refresh_inode(oldfid, d_inode(old_dentry));                                                   
+                v9fs_invalidate_inode_attr(dir);                                                                   
+        }                                                                                                          
+        p9_client_clunk(oldfid);                                                                                   
+        return retval; 
+
+
+	return ret;
 }
+
+/* Similar to removing a file reference */
+static int
+virtfs_unlink(struct vop_unlink_args *ap)
+{
+	struct vnode *vp = ap->a_vp;
+        struct virtfs_node *node = VTON(vp);
+	struct virtfs_inode *inode = &node->inode;
+	struct vnode *dvp = ap->a_dvp;
+        struct virtfs_node *dir_node = VTON(dvp);
+	struct virtfs_inode *dir_ino = &dir_node->inode;
+
+	int ret = 0;
+
+        p9_debug(VOPS, "%s: vp %p node %p \n",
+            __func__, vp, node);
+
+        if (vp->v_type == VDIR)
+                return (EISDIR);
+
+        ret = remove_wrapper(node);
+
+	if (ret == 0) {
+		CLR_LINKS(inode);
+		DECR_LINKS(dir_ino);
+	}
+
+        return (ret);
+}
+
+#endif
 
 static int
 virtfs_rename(struct vop_rename_args *ap)
 {
 	return 0;
 }
+
+/* Soft links */
 static int
 virtfs_symlink(struct vop_symlink_args *ap)
 {
-	return 0;
+	struct vnode *dvp = ap->a_dvp;
+        struct vnode **vpp = ap->a_vpp;
+        struct componentname *cnp = ap->a_cnp;
+        uint16_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
+        struct virtfs_node *dir_node = VTON(dvp);
+	struct virtfs_inode *inode = &dir_node->inode;
+	uint32_t perm;
+        int ret = 0;
+
+        p9_debug(VOPS, "%s: dvp %p\n", __func__, dvp);
+
+        perm = convert_to_p9_mode(mode);
+
+        ret = create_wrapper(dir_node, cnp, NULL, P9PROTO_DMSYMLINK | perm, P9PROTO_OREAD, vpp);
+
+	if (ret == 0) {
+		INCR_LINKS(inode);
+	}
+
+	return ret;
 }
 
-#if 0
-static void
+static void 
 dump_p9dirent(struct dirent *p)
 {
 	printf("name :%s d_reclen%hu d_type:%hhu ino_%hu \n",p->d_name,p->d_reclen,p->d_type,p->d_fileno);
 }
-#endif
 
 /*
  * Minimum length for a directory entry: size of fixed size section of
@@ -931,7 +1064,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	struct uio *uio = ap->a_uio;
         struct vnode *vp = ap->a_vp;
         struct dirent cde;
-	uint64_t offset = 0, diroffset = 0;
+	uint64_t offset = 0,diroffset;
 	struct virtfs_node *np = VTON(ap->a_vp);
         int error = 0;
 	int count = 0;
@@ -993,9 +1126,9 @@ virtfs_readdir(struct vop_readdir_args *ap)
 			if (uio->uio_resid < GENERIC_DIRSIZ(&cde))
 				break;
 
-			// Fix this number otherwise it ll break the vfs readir
-			cde.d_fileno = 23+offset;
-			//dump_p9dirent(&cde);
+			// Fix this number otherwise it ll break the vfs readir 
+			//cde.d_fileno = 23+offset;
+			dump_p9dirent(&cde);
 			/* Transfer */
 			error = uiomove(&cde, GENERIC_DIRSIZ(&cde), uio);
 
@@ -1014,6 +1147,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	return (error);
 }
 
+/* this needs some fixing ..*/
 static int
 virtfs_strategy
         (struct vop_strategy_args /* {
@@ -1036,18 +1170,6 @@ virtfs_strategy
 	return 0;
 }
 
-static int
-virtfs_readlink(struct vop_readlink_args *ap)
-{
-	return 0;
-}
-
-static int
-virtfs_inactive(struct vop_inactive_args *ap)
-{
-	return (0);
-}
-
 struct vop_vector virtfs_vnops = {
 	.vop_default =		&default_vnodeops,
 	.vop_lookup =		vfs_cache_lookup,
@@ -1065,12 +1187,11 @@ struct vop_vector virtfs_vnops = {
 	.vop_write =		virtfs_write,
 	.vop_fsync =		virtfs_fsync,
 	.vop_remove =		virtfs_remove,
-	.vop_link =		virtfs_link,
+//	.vop_link =		virtfs_link,
+//	.vop_unlink = 		virtfs_unlink,
 	.vop_rename =		virtfs_rename,
 	.vop_mkdir =		virtfs_mkdir,
 	.vop_rmdir =		virtfs_rmdir,
 	.vop_symlink =		virtfs_symlink,
-	.vop_readlink =		virtfs_readlink,
-	.vop_inactive =		virtfs_inactive,
 	.vop_strategy = 	virtfs_strategy,
 };
