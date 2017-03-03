@@ -37,6 +37,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/dirent.h>
 #include <sys/namei.h>
 #include <sys/stat.h>
+#include <sys/priv.h>
 
 #include <sys/types.h>
 #include <fcntl.h>
@@ -50,9 +51,27 @@ __FBSDID("$FreeBSD$");
 #include <vm/vnode_pager.h>
 #include <sys/buf.h>
 #include <sys/bio.h>
+/* File permissions. */
+#define IEXEC           0000100 /* Executable. */
+#define IWRITE          0000200 /* Writeable. */
+#define IREAD           0000400 /* Readable. */
+#define ISVTX           0001000 /* Sticky bit. */
+#define ISGID           0002000 /* Set-gid. */
+#define ISUID           0004000 /* Set-uid. */
 
 struct vop_vector virtfs_vnops;
 uint32_t convert_to_p9_mode(uint32_t mode);
+
+static void
+virtfs_itimes(struct vnode *vp)
+{
+  	struct virtfs_node *node = VTON(vp);
+	struct timespec ts;
+        struct virtfs_inode *inode = &node->inode;
+
+        vfs_timestamp(&ts);
+        inode->i_mtime = ts.tv_sec;
+}
 
 int
 virtfs_cleanup(struct virtfs_node *node)
@@ -119,7 +138,7 @@ virtfs_lookup(struct vop_cachedlookup_args *ap)
 
 		/* client_walk is equivalent to searching a component name in a directory(fid)
 		 * here. If newfid is returned, we have found an entry for this component name
-		 * so, go and create the rest of the vnode infra(vget_wrapper) for the returned 
+		 * so, go and create the rest of the vnode infra(vget_wrapper) for the returned
 		 * newfid */
 
 		newfid = p9_client_walk(dnp->vfid,
@@ -608,13 +627,13 @@ convert_to_p9_mode(uint32_t mode)
 		res |= P9PROTO_DMNAMEDPIPE;
 
 	// Is the reason for the red file ?
-        /*if ((mode & S_ISUID) == S_ISUID)
+        if ((mode & S_ISUID) == S_ISUID)
                res |= P9PROTO_DMSETUID;
         if ((mode & S_ISGID) == S_ISGID)
                 res |= P9PROTO_DMSETGID;
         if ((mode & S_ISVTX) == S_ISVTX)
                 res |= P9PROTO_DMSETVTX;
-	*/
+
         return res;
 }
 
@@ -660,7 +679,7 @@ virtfs_stat_vnode_u(struct p9_wstat *stat, struct vnode *vp)
 	inode->n_gid = stat->n_gid;
 	inode->n_muid = stat->n_muid;
 	inode->i_extension = stat->extension;
-	inode->i_uid = stat->uid; /* Make sure you copy the numeric */
+	inode->i_uid = stat->uid;
 	inode->i_gid = stat->gid;
 	inode->i_muid = stat->muid;
 	SET_LINKS(inode);
@@ -675,25 +694,213 @@ virtfs_stat_vnode_u(struct p9_wstat *stat, struct vnode *vp)
 }
 
 static int
+virtfs_inode_to_wstat(struct virtfs_inode *inode , struct p9_wstat *wstat)
+{
+	//dump_stat(stat);
+	wstat->length = inode->i_size;
+	wstat->type = inode->i_type;
+	wstat->mtime = inode->i_mtime;
+	wstat->atime = inode->i_atime;
+	wstat->name = inode->i_name;
+	wstat->n_uid = inode->n_uid;
+	wstat->n_gid = inode->n_gid;
+	wstat->n_muid = inode->n_muid;
+	wstat->extension = inode->i_extension;
+	wstat->uid = inode->i_uid;
+	wstat->gid = inode->i_gid;
+	wstat->muid = inode->i_muid;
+	wstat->mode = convert_to_p9_mode(inode->i_mode);
+
+	return 0;
+}
+
+
+static int
+virtfs_chown(struct vnode *vp, uid_t uid, gid_t gid, struct ucred *cred,
+    struct thread *td)
+{
+        struct virtfs_node *node = VTON(vp);
+        struct virtfs_inode *inode = &node->inode;
+        uid_t ouid;
+        gid_t ogid;
+        int error = 0;
+
+        if (uid == (uid_t)VNOVAL)
+                uid = inode->n_uid;
+        if (gid == (gid_t)VNOVAL)
+                gid = inode->n_gid;
+        /*
+         * To modify the ownership of a file, must possess VADMIN for that
+         * file.
+         */
+        if ((error = VOP_ACCESSX(vp, VWRITE_OWNER, cred, td)))
+                return (error);
+        /*
+         * To change the owner of a file, or change the group of a file to a
+         * group of which we are not a member, the caller must have
+         * privilege.
+         */
+        if (((uid != inode->n_uid && uid != cred->cr_uid) ||
+            (gid != inode->n_gid && !groupmember(gid, cred))) &&
+            (error = priv_check_cred(cred, PRIV_VFS_CHOWN, 0)))
+                return (error);
+        ogid = inode->n_gid;
+        ouid = inode->n_uid;
+
+        inode->n_gid = gid;
+        inode->n_uid = uid;
+
+        if ((inode->i_mode & (ISUID | ISGID)) &&
+            (ouid != uid || ogid != gid)) {
+                if (priv_check_cred(cred, PRIV_VFS_RETAINSUGID, 0))
+                        inode->i_mode &= ~(ISUID | ISGID);
+        }
+        p9_debug(VOPS, "%s: vp %p, cred %p, td %p - ret OK\n", __func__, vp,
+            cred, td);
+        return (0);
+}
+
+static int
+virtfs_chmod(struct vnode *vp, int mode, struct ucred *cred, struct thread *td)
+{
+        struct virtfs_node *node = VTON(vp);
+        struct virtfs_inode *inode = &node->inode;
+        uint16_t nmode;
+        int error = 0;
+
+        p9_debug(VOPS, "%s: vp %p, mode %x, cred %p, td %p\n", __func__, vp,
+            mode, cred, td);
+        /*
+         * To modify the permissions on a file, must possess VADMIN
+         * for that file.
+         */
+        if ((error = VOP_ACCESS(vp, VADMIN, cred, td)))
+                return (error);
+
+        /*
+         * Privileged processes may set the sticky bit on non-directories,
+         * as well as set the setgid bit on a file with a group that the
+         * process is not a member of. Both of these are allowed in
+         * jail(8).
+         */
+        if (vp->v_type != VDIR && (mode & S_ISTXT)) {
+                if (priv_check_cred(cred, PRIV_VFS_STICKYFILE, 0))
+                        return (EFTYPE);
+        }
+        if (!groupmember(inode->n_gid, cred) && (mode & ISGID)) {
+                error = priv_check_cred(cred, PRIV_VFS_SETGID, 0);
+                if (error)
+                        return (error);
+        }
+
+        /*
+         * Deny setting setuid if we are not the file owner.
+         */
+        if ((mode & ISUID) && inode->n_uid != cred->cr_uid) {
+                error = priv_check_cred(cred, PRIV_VFS_ADMIN, 0);
+                if (error)
+                        return (error);
+        }
+        nmode = inode->i_mode;
+        nmode &= ~ALLPERMS;
+        nmode |= (mode & ALLPERMS);
+        inode->i_mode = nmode;
+
+        p9_debug(VOPS, "%s: to mode %x\n", __func__, nmode);
+
+        return (error);
+}
+
+
+static int
 virtfs_setattr(struct vop_setattr_args *ap)
 {
 	struct vnode *vp = ap->a_vp;
         struct vattr *vap = ap->a_vap;
         struct virtfs_node *node = VTON(vp);
+	struct virtfs_inode *inode = &node->inode;
+	struct ucred *cred = ap->a_cred;
+	struct thread *td = curthread;
 	int error = 0;
         struct p9_wstat wstat;
 
         memset(&wstat, 0, sizeof(struct p9_wstat));
 
-	/* Set up the wstat structure to write to the disk */
-	wstat.mode = convert_to_p9_mode(vap->va_mode);
-        wstat.mtime = vap->va_mtime.tv_sec;
-        wstat.atime = vap->va_atime.tv_sec;
-        wstat.length = vap->va_size;
-	// Avoid this for now to avoid the red ?
-        wstat.n_uid = vap->va_uid;
-       	wstat.n_gid = vap->va_gid;
+	if ((vap->va_type != VNON) || (vap->va_nlink != VNOVAL) ||
+	    (vap->va_fsid != VNOVAL) || (vap->va_fileid != VNOVAL) ||
+	    (vap->va_blocksize != VNOVAL) || (vap->va_rdev != VNOVAL) ||
+	    (vap->va_bytes != VNOVAL) || (vap->va_gen != VNOVAL)) {
+		p9_debug(VOPS, "%s: unsettable attribute\n", __func__);
+		return (EINVAL);
+	}
 
+	if (vap->va_flags != VNOVAL) {
+		p9_debug(VOPS, "%s: vp:%p td:%p flags:%lx\n", __func__, vp,
+		    td, vap->va_flags);
+
+		if (vp->v_mount->mnt_flag & MNT_RDONLY)
+			return (EROFS);
+		/*
+		 * Callers may only modify the file flags on objects they
+		 * have VADMIN rights for.
+		 */
+		if ((error = VOP_ACCESS(vp, VADMIN, cred, td)))
+			return (error);
+	}
+
+	if (vap->va_size != (u_quad_t)VNOVAL) {
+		p9_debug(VOPS, "%s: vp:%p td:%p size:%jx\n", __func__, vp, td,
+		    (uintmax_t)vap->va_size);
+
+		switch (vp->v_type) {
+		case VDIR:
+			return (EISDIR);
+		case VLNK:
+		case VREG:
+			if (vp->v_mount->mnt_flag & MNT_RDONLY)
+				return (EROFS);
+			break;
+		default:
+			return (0);
+		}
+
+
+		return (0);
+	}
+
+	if (vap->va_uid != (uid_t)VNOVAL || vap->va_gid != (gid_t)VNOVAL) {
+		if (vp->v_mount->mnt_flag & MNT_RDONLY)
+			return (EROFS);
+		p9_debug(VOPS, "%s: vp:%p td:%p uid/gid %x/%x\n", __func__,
+		    vp, td, vap->va_uid, vap->va_gid);
+		error = virtfs_chown(vp, vap->va_uid, vap->va_gid, cred, td);
+		if (error)
+			return (error);
+	}
+
+	if (vap->va_mode != (mode_t)VNOVAL) {
+		if (vp->v_mount->mnt_flag & MNT_RDONLY)
+			return (EROFS);
+		p9_debug(VOPS, "%s: vp:%p td:%p mode %x\n", __func__, vp, td,
+		    vap->va_mode);
+
+		error = virtfs_chmod(vp, (int)vap->va_mode, cred, td);
+		if (error)
+			return (error);
+	}
+	if (vap->va_atime.tv_sec != VNOVAL ||
+	    vap->va_mtime.tv_sec != VNOVAL ||
+	    vap->va_birthtime.tv_sec != VNOVAL) {
+		p9_debug(VOPS, "%s: vp:%p td:%p time a/m/b %jx/%jx/%jx\n",
+		    __func__, vp, td, (uintmax_t)vap->va_atime.tv_sec,
+		    (uintmax_t)vap->va_mtime.tv_sec,
+		    (uintmax_t)vap->va_birthtime.tv_sec);
+
+		virtfs_itimes(vp);
+		return (0);
+	}
+	/* Write the inode structure values into wstat */
+	virtfs_inode_to_wstat(inode, &wstat);
         error = p9_client_wstat(node->vfid, &wstat);
         if (error < 0)
                 return error;
@@ -760,17 +967,6 @@ virtfs_read(struct vop_read_args *ap)
 	uio->uio_offset = offset;
 
 	return 0;
-}
-
-static void
-virtfs_itimes(struct vnode *vp)
-{
-  	struct virtfs_node *node = VTON(vp);
-	struct timespec ts;
-        struct virtfs_inode *inode = &node->inode;
-
-        vfs_timestamp(&ts);
-        inode->i_mtime = ts.tv_sec;
 }
 
 static int
@@ -840,7 +1036,7 @@ virtfs_write(struct vop_write_args *ap)
 
 	if (node->vofid == NULL) {
 		// Force a file open
-		map.a_mode = 3;// 
+		map.a_mode = 3;//
 		map.a_td = curthread;
 		map.a_vp = vp;
 		virtfs_open(&map);
@@ -968,18 +1164,18 @@ virtfs_link(struct vop_link_args *ap)
         p9_debug(P9_DEBUG_VFS, " %lu,%pd,%pd\n",
                  dir->i_ino, dentry, old_dentry);
 
-        oldfid = p9_client_walk(old_dentry);                                              
-        if (IS_ERR(oldfid))                                                                                        
-                return PTR_ERR(oldfid); 
- 
-        sprintf(name, "%d\n", oldfid->fid);                                                                        
-        retval = v9fs_vfs_mkspecial(dir, dentry, P9_DMLINK, name);                                                 
+        oldfid = p9_client_walk(old_dentry);
+        if (IS_ERR(oldfid))
+                return PTR_ERR(oldfid);
+
+        sprintf(name, "%d\n", oldfid->fid);
+        retval = v9fs_vfs_mkspecial(dir, dentry, P9_DMLINK, name);
         if (!retval) {
-                v9fs_refresh_inode(oldfid, d_inode(old_dentry));                                                   
-                v9fs_invalidate_inode_attr(dir);                                                                   
-        }                                                                                                          
-        p9_client_clunk(oldfid);                                                                                   
-        return retval; 
+                v9fs_refresh_inode(oldfid, d_inode(old_dentry));
+                v9fs_invalidate_inode_attr(dir);
+        }
+        p9_client_clunk(oldfid);
+        return retval;
 
 
 	return ret;
@@ -1048,7 +1244,7 @@ virtfs_symlink(struct vop_symlink_args *ap)
 	return ret;
 }
 
-static void 
+static void
 dump_p9dirent(struct dirent *p)
 {
 	printf("name :%s d_reclen%hu d_type:%hhu ino_%hu \n",p->d_name,p->d_reclen,p->d_type,p->d_fileno);
@@ -1088,7 +1284,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	/* Make sure to zeroize the buffer */
 	memset(clnt->io_buffer, 0, clnt->msize);
 
-	
+
 	count = min(clnt->msize, uio->uio_resid);
 
 	offset = 0;
@@ -1126,7 +1322,7 @@ virtfs_readdir(struct vop_readdir_args *ap)
 			if (uio->uio_resid < GENERIC_DIRSIZ(&cde))
 				break;
 
-			// Fix this number otherwise it ll break the vfs readir 
+			// Fix this number otherwise it ll break the vfs readir
 			//cde.d_fileno = 23+offset;
 			dump_p9dirent(&cde);
 			/* Transfer */

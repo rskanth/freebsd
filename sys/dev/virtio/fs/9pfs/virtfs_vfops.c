@@ -65,9 +65,9 @@ dispose_node(struct virtfs_node **nodep)
         struct vnode *vp;
 
         node = *nodep;
-        if (!node) {
+        if (!node)
                 return;
-        }
+
         p9_debug(VOPS, "dispose_node: %p\n", *nodep);
 
         vp = NTOV(node);
@@ -366,7 +366,7 @@ virtfs_statfs(struct mount *mp, struct statfs *buf)
 			buf->f_bsize = 4096;
 		else
 			buf->f_bsize = statfs.bsize;
-		
+
 		buf->f_iosize = buf->f_bsize;
 		printf("buf_f_iosize :%d\n",buf->f_bsize);
 		buf->f_blocks = statfs.blocks;
