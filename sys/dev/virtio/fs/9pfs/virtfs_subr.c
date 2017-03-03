@@ -51,7 +51,7 @@ __FBSDID("$FreeBSD$");
 #include "../9p.h"
 #include "virtfs.h"
 
-int p9_debug_level = 0; //0xFFFF;
+int p9_debug_level = 0xFFFF;
 int
 virtfs_proto_dotl(struct virtfs_session *vses)
 {
