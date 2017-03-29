@@ -51,7 +51,7 @@ __FBSDID("$FreeBSD$");
 #include "../9p.h"
 #include "virtfs.h"
 
-int p9_debug_level = 0xFFFF;
+int p9_debug_level = 0;///0xFFFF;
 int
 virtfs_proto_dotl(struct virtfs_session *vses)
 {
@@ -75,7 +75,7 @@ virtfs_init_session(struct mount *mp)
 		p9_debug(SUBR, "problem initializing 9p client\n");
 		goto fail;
 	}
-	/* Find the client version and cache the copy. We will use this copy 
+	/* Find the client version and cache the copy. We will use this copy
 	* throughout FS layer.*/
 	if (p9_is_proto_dotl(vses->clnt)) {
 		vses->flags |= VIRTFS_PROTO_2000L;
@@ -125,7 +125,8 @@ virtfs_close_session(struct mount *mp)
 	VIRTFS_LOCK(vses);
 	STAILQ_FOREACH(p, &vses->virt_node_list, virtfs_node_next) {
 
-		STAILQ_REMOVE(&vses->virt_node_list, p, virtfs_node, virtfs_node_next);
+                /// the cleanup_itself does the remove from the list too.
+		///STAILQ_REMOVE(&vses->virt_node_list, p, virtfs_node, virtfs_node_next);
 		p9_fid_destroy(p->vfid);
 		virtfs_cleanup(p);
 	}

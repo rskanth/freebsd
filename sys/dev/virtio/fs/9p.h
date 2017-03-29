@@ -160,7 +160,6 @@ struct p9_qid {
 	uint64_t path;
 };
 
-
 /* FS information stat structure */
 struct p9_statfs {
 	uint32_t type;

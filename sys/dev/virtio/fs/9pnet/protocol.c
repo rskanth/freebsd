@@ -108,7 +108,7 @@ p9_buf_vreadf(struct p9_buffer *buf, int proto_version, const char *fmt,
 					break;
 				}
 				//printf("After sending :%d %d\n",*val,le_val);
-		
+
 			}
 			break;
 		case 'q':{
@@ -175,7 +175,7 @@ p9_buf_vreadf(struct p9_buffer *buf, int proto_version, const char *fmt,
 						&stbuf->n_muid);
 				if (err)
 					stat_free(stbuf);
-				//printf("length of file :%lu\n",stbuf->length);  
+				//printf("length of file :%lu\n",stbuf->length);
 			}
 			break;
 		case 'D':{
@@ -322,7 +322,7 @@ p9_buf_vwritef(struct p9_buffer *buf, int proto_version, const char *fmt,
 				//printf("DId b %u \n",val);
 				//printf("size %u id %c tag%u\n",buf->size,buf->id,buf->tag);
 				//printf("bit mapint values%hhu \n",buf->sdata[4]);
-	
+
 			}
 			break;
 		case 'w':{
@@ -339,7 +339,7 @@ p9_buf_vwritef(struct p9_buffer *buf, int proto_version, const char *fmt,
 					//printf("DId  %d\n",val);
 					//printf("size %u id %c tag%u\n",buf->size,buf->id,buf->tag);
 					//printf("int values%d %d \n",buf->sdata[0],buf->sdata[5]);
-				
+
 			}
 			break;
 		case 'q':{
@@ -397,10 +397,10 @@ p9_buf_vwritef(struct p9_buffer *buf, int proto_version, const char *fmt,
 				// Count bytes of the blob into the buf.
 				if (!err && buf_write(buf, data, count))
 					err = EFAULT;
-	
+
 			}
 			break;
-	
+
 		case 'T':{
 				uint16_t nwname = va_arg(ap, int);
 				const char **wnames = va_arg(ap, const char **);
@@ -550,42 +550,34 @@ void p9_buf_reset(struct p9_buffer *buf)
 	buf->size = 0;
 }
 
-/* Directory entry read with the buf we have. Call this once we have the 
+/* Directory entry read with the buf we have. Call this once we have the
  * buf to parse .*/
 int p9_dirent_read(struct p9_client *clnt, char *buf, int start, int len,
-		  struct dirent *dirent)
+		  struct p9_dirent *dent)
 {
 	struct p9_buffer msg_buf;
 	int ret;
 	char *nameptr;
-	struct p9_qid qid;
 	uint16_t sle;
-	uint64_t d_off;
-	uint64_t path = qid.path + 2;
 
 	msg_buf.size = len;
 	msg_buf.capacity = len;
 	msg_buf.sdata = buf;
 	msg_buf.offset = start;
 
-	ret = p9_buf_readf(&msg_buf, clnt->proto_version, "Qqbs", &qid,
-			  &d_off, &dirent->d_type, &nameptr);
+	ret = p9_buf_readf(&msg_buf, clnt->proto_version, "Qqbs", &dent->qid,
+			  &dent->d_off, &dent->d_type, &nameptr);
 	if (ret) {
 		p9_debug(PROTO, "<<< p9dirent_read failed: %d\n", ret);
 		goto out;
 	}
 
 	sle = strlen(nameptr);
-	strncpy(dirent->d_name, nameptr, sle);
- 	dirent->d_namlen = sle;
+	strncpy(dent->d_name, nameptr, sle);
+	dent->len = sle;
 	free(nameptr, M_TEMP);
 
-        if (sizeof(ino_t) == sizeof(path))
-		memcpy(&dirent->d_fileno, &path, sizeof(ino_t));
-        else
-		dirent->d_fileno = (ino_t) (path ^ (path >> 32));
-
 out:
-	//printf("fake_buf.offset :%d %hu\n",fake_buf.offset,le);
+	printf("fake_buf.offset :%d %hu\n",msg_buf.offset,sle);
 	return msg_buf.offset;
 }

@@ -60,7 +60,7 @@ uma_zone_t virtfs_node_zone;
 
 void
 dispose_node(struct virtfs_node **nodep)
-{       
+{
         struct virtfs_node *node;
         struct vnode *vp;
 
@@ -80,16 +80,16 @@ dispose_node(struct virtfs_node **nodep)
         *nodep = NULL;
 }
 
-static int     
+static int
 virtfs_init(struct vfsconf *vfsp)
-{       
+{
         virtfs_node_zone = uma_zcreate("virtfs node zone",
             sizeof(struct virtfs_node), NULL, NULL, NULL, NULL, 0, 0);
-                
-        return (0); 
-}             
 
-static int     
+        return (0);
+}
+
+static int
 virtfs_uninit(struct vfsconf *vfsp)
 {
         uma_zdestroy(virtfs_node_zone);
@@ -137,7 +137,7 @@ out:
 /* For the root vnode's vnops. */
 extern struct vop_vector virtfs_vnops;
 
-/* This is a vfs ops routiune so defining it here instead of vnops. This 
+/* This is a vfs ops routiune so defining it here instead of vnops. This
    needs some fixing(a wrapper moslty when we need create to work. Ideally
    it should call this, initialize the virtfs_node and create the fids and qids
    for interactions*/
@@ -182,11 +182,9 @@ int virtfs_vget_wrapper
 		*vpp = NULLVP;
 		return (error);
 	}
-	printf("this should be set by now ..%d\n",vp->v_bufobj.bo_bsize);
-
 	/* If we dont have it, create one. */
 	if (virtfs_node == NULL) {
-		// Make the virtfs_node as a zone allocator ? 
+		// Make the virtfs_node as a zone allocator ?
 		virtfs_node =  uma_zalloc(virtfs_node_zone, M_WAITOK | M_ZERO);
 		inode = &virtfs_node->inode;
 		vp->v_data = virtfs_node;
@@ -263,7 +261,7 @@ p9_mount(struct mount *mp)
 	/* Since the hardware iosize from the Qemu*/
 	/* How do we get this gneric ? */
 	mp->mnt_iosize_max = 4096;
-	printf("mnt_iosize :%d\n",mp->mnt_iosize_max);
+	//printf("mnt_iosize :%d\n",mp->mnt_iosize_max);
 	/* Allocate and initialize the private mount structure. */
 	vmp = malloc(sizeof (struct virtfs_mount), M_P9MNT, M_WAITOK | M_ZERO);
 	mp->mnt_data = vmp;
@@ -298,16 +296,16 @@ out:
 	return error;
 }
 
-/* 
+/*
  * Mount entry point. This looks smaller compared to typical FS entry points in BSD.
- * This is a virtual device that is being mounted on so we dont really have a way to 
+ * This is a virtual device that is being mounted on so we dont really have a way to
  * check the ND and the geom permissions which are usually done here.
  */
 static int
 virtfs_mount(struct mount *mp)
 {
 	int error = 0;
-	
+
 	/* No support for UPDATE for now */
 	if (mp->mnt_flag & MNT_UPDATE)
 		return EOPNOTSUPP;
@@ -344,44 +342,16 @@ virtfs_root(struct mount *mp, int lkflags, struct vnode **vpp)
 }
 
 /* Get this working to fix the default sizes */
-
 static int
 virtfs_statfs(struct mount *mp, struct statfs *buf)
 {
-	struct virtfs_mount *vmp = VFSTOP9(mp);
-	struct virtfs_node *np = &vmp->virtfs_session.rnp;
-        struct p9_statfs statfs;
-        int res;
-
-	if (np->vfid == NULL) {
-		return EFAULT;
-	}
-
-	res = p9_client_statfs(np->vfid, &statfs);
-
-	if (res == 0) {
-		buf->f_type = statfs.type;
-
-		if (statfs.bsize > 4096)
-			buf->f_bsize = 4096;
-		else
-			buf->f_bsize = statfs.bsize;
-
-		buf->f_iosize = buf->f_bsize;
-		printf("buf_f_iosize :%d\n",buf->f_bsize);
-		buf->f_blocks = statfs.blocks;
-		buf->f_bfree = statfs.bfree;
-		buf->f_bavail = statfs.bavail;
-		buf->f_files = statfs.files;
-		buf->f_ffree = statfs.ffree;
-		//buf->f_fsid.val[0] = statfs.fsid & 0xFFFFFFFFUL;
-		//buf->f_fsid.val[1] = (statfs.fsid >> 32) & 0xFFFFFFFFUL;
-        }
-	else {
-		// making the logical block size as PAGE_SIZE ?
-		buf->f_bsize = 4096;
-		buf->f_iosize = buf->f_bsize;   /* XXX */
-	}
+        /* For uniix version we dont need to poll the host.
+         * when we add the linux version , we need to call the client
+         * _statfs call
+         */
+        (void)mp;
+        buf->f_bsize = PAGE_SIZE;
+        buf->f_iosize = buf->f_bsize;
 
         return 0;
 }

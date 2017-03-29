@@ -45,6 +45,7 @@ __FBSDID("$FreeBSD$");
 #include "virtfs.h"
 #include "../client.h"
 
+
 #include <vm/vm.h>
 #include <vm/vm_extern.h>
 #include <vm/vm_object.h>
@@ -77,12 +78,18 @@ int
 virtfs_cleanup(struct virtfs_node *node)
 {
 	struct vnode *vp = NTOV(node);
+	struct virtfs_session *ses = node->virtfs_ses;
 	/* Invalidate all entries to a particular vnode. */
         cache_purge(vp);
 
         /* Destroy the vm object and flush associated pages. */
         vnode_destroy_vobject(vp);
 	vfs_hash_remove(vp);
+
+	/* Remove the virtfs_node from the list before we cleanup.*/
+	VIRTFS_LOCK(ses);
+	STAILQ_REMOVE(&ses->virt_node_list, node, virtfs_node, virtfs_node_next);
+	VIRTFS_UNLOCK(ses);
 
         /* Dispose all node knowledge.*/
        	dispose_node(&node);
@@ -94,19 +101,15 @@ virtfs_reclaim(struct vop_reclaim_args *ap)
 {
         struct vnode *vp = ap->a_vp;
         struct virtfs_node *virtfs_node = VTON(vp);
-	struct virtfs_session *ses = virtfs_node->virtfs_ses;
 
         p9_debug(VOPS, "%s: vp:%p node:%p\n", __func__, vp, virtfs_node);
-	if (virtfs_node == NULL) return 0;
+	if (virtfs_node == NULL)
+            return 0;
 
 	if (virtfs_node->vfid)
 		p9_client_clunk(virtfs_node->vfid);
 
-	/* Remove the virtfs_node from the list before we cleanup.*/
-	VIRTFS_LOCK(ses);
-	STAILQ_REMOVE(&ses->virt_node_list, virtfs_node, virtfs_node, virtfs_node_next);
-	VIRTFS_UNLOCK(ses);
-	virtfs_cleanup(virtfs_node);
+        virtfs_cleanup(virtfs_node);
 
         return (0);
 }
@@ -269,7 +272,7 @@ virtfs_create(struct vop_create_args *ap)
 	struct vnode *dvp = ap->a_dvp;
         struct vnode **vpp = ap->a_vpp;
         struct componentname *cnp = ap->a_cnp;
-        uint16_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
+        uint32_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
         struct virtfs_node *dir_node = VTON(dvp);
 	struct virtfs_inode *inode = &dir_node->inode;
 	uint32_t perm;
@@ -293,7 +296,7 @@ virtfs_mkdir(struct vop_mkdir_args *ap)
 	struct vnode *dvp = ap->a_dvp;
         struct vnode **vpp = ap->a_vpp;
         struct componentname *cnp = ap->a_cnp;
-        uint16_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
+        uint32_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
         struct virtfs_node *dir_node = VTON(dvp);
 	struct virtfs_inode *inode = &dir_node->inode;
 	uint32_t perm;
@@ -315,7 +318,7 @@ virtfs_mknod(struct vop_mknod_args *ap)
 	struct vnode *dvp = ap->a_dvp;
         struct vnode **vpp = ap->a_vpp;
         struct componentname *cnp = ap->a_cnp;
-        uint16_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
+        uint32_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
         struct virtfs_node *dir_node = VTON(dvp);
 	struct virtfs_inode *inode = &dir_node->inode;
 	uint32_t perm;
@@ -336,7 +339,7 @@ virtfs_mknod(struct vop_mknod_args *ap)
 
 static int virtfs_uflags_mode(int uflags, int extended)
 {
-        int ret;
+        uint32_t ret;
 
         ret = 0;
 
@@ -377,7 +380,7 @@ virtfs_open(struct vop_open_args *ap)
 	struct virtfs_node *np = VTON(ap->a_vp);
 	struct p9_fid *fid = np->vfid;
 	size_t filesize;
-	int mode;
+	uint32_t mode;
 
 	p9_debug(VOPS, "open \n");
 
@@ -549,7 +552,7 @@ virtfs_getattr(struct vop_getattr_args *ap)
         vap->va_fsid = vp->v_mount->mnt_stat.f_fsid.val[0];
         vap->va_size = inode->i_size;
 	vap->va_nlink = inode->i_links_count;
-	vap->va_blocksize = 512;
+	vap->va_blocksize = PAGE_SIZE;
         vap->va_gen = 0;
         vap->va_filerev = 0;
         vap->va_vaflags = 0;
@@ -597,8 +600,8 @@ static int
 virtfs_mode2perm(struct virtfs_session *ses,
                        struct p9_wstat *stat)
 {
-        int res = 0;
-        int mode = stat->mode;
+        uint32_t res = 0;
+        uint32_t mode = stat->mode;
 
 	/* Get the correct perms */
 	res = mode & ALLPERMS;
@@ -617,16 +620,15 @@ virtfs_mode2perm(struct virtfs_session *ses,
 uint32_t
 convert_to_p9_mode(uint32_t mode)
 {
-        int res;
-        res = mode & 0777;
+        uint32_t res = 0;
+        res = mode & ALLPERMS;
         if (S_ISDIR(mode))
                 res |= P9PROTO_DMDIR;
         if (S_ISSOCK(mode))
-		res |= P9PROTO_DMSOCKET;
+  		res |= P9PROTO_DMDIR; // hack the socket for bonnie.
         if (S_ISFIFO(mode))
 		res |= P9PROTO_DMNAMEDPIPE;
 
-	// Is the reason for the red file ?
         if ((mode & S_ISUID) == S_ISUID)
                res |= P9PROTO_DMSETUID;
         if ((mode & S_ISGID) == S_ISGID)
@@ -641,7 +643,7 @@ static int
 virtfs_mode_to_generic(struct virtfs_session *ses, struct p9_wstat *stat)
 {
 	uint32_t mode = stat->mode;
-	int res;
+	uint32_t res;
 
 	res = virtfs_mode2perm(ses, stat);
 
@@ -650,12 +652,11 @@ virtfs_mode_to_generic(struct virtfs_session *ses, struct p9_wstat *stat)
         else if (mode & P9PROTO_DMSYMLINK)
                 res |= S_IFLNK;
         else if (mode & P9PROTO_DMSOCKET)
-                res |= S_IFSOCK;
+                res |= S_IFDIR; // h ack it for bonnie./
         else if (mode & P9PROTO_DMNAMEDPIPE)
                 res |= S_IFIFO;
         else
                 res |= S_IFREG;
-
         return res;
 }
 
@@ -666,7 +667,7 @@ virtfs_stat_vnode_u(struct p9_wstat *stat, struct vnode *vp)
 	struct virtfs_node *np = VTON(vp);
 	struct virtfs_inode *inode = &np->inode;
 	struct virtfs_session *ses = np->virtfs_ses;
-	int mode;
+	uint32_t mode;
 
 	//dump_stat(stat);
 	inode->i_size = stat->length;
@@ -699,6 +700,7 @@ virtfs_inode_to_wstat(struct virtfs_inode *inode , struct p9_wstat *wstat)
 	//dump_stat(stat);
 	wstat->length = inode->i_size;
 	wstat->type = inode->i_type;
+        wstat->dev = inode->i_dev;
 	wstat->mtime = inode->i_mtime;
 	wstat->atime = inode->i_atime;
 	wstat->name = inode->i_name;
@@ -713,7 +715,6 @@ virtfs_inode_to_wstat(struct virtfs_inode *inode , struct p9_wstat *wstat)
 
 	return 0;
 }
-
 
 static int
 virtfs_chown(struct vnode *vp, uid_t uid, gid_t gid, struct ucred *cred,
@@ -761,11 +762,11 @@ virtfs_chown(struct vnode *vp, uid_t uid, gid_t gid, struct ucred *cred,
 }
 
 static int
-virtfs_chmod(struct vnode *vp, int mode, struct ucred *cred, struct thread *td)
+virtfs_chmod(struct vnode *vp, uint32_t  mode, struct ucred *cred, struct thread *td)
 {
         struct virtfs_node *node = VTON(vp);
         struct virtfs_inode *inode = &node->inode;
-        uint16_t nmode;
+        uint32_t nmode;
         int error = 0;
 
         p9_debug(VOPS, "%s: vp %p, mode %x, cred %p, td %p\n", __func__, vp,
@@ -811,6 +812,16 @@ virtfs_chmod(struct vnode *vp, int mode, struct ucred *cred, struct thread *td)
         return (error);
 }
 
+/*
+static int dump_vap(struct vattr *vp)
+{
+        printf("vap->va_type %d:
+                vap->va_fsid
+                vap->va_nlink
+                vap->va_fileid
+                vap->vap->va_bytes
+                \n");
+}*/
 
 static int
 virtfs_setattr(struct vop_setattr_args *ap)
@@ -826,6 +837,8 @@ virtfs_setattr(struct vop_setattr_args *ap)
 
         memset(&wstat, 0, sizeof(struct p9_wstat));
 
+  //      dump_vap(vap);
+
 	if ((vap->va_type != VNON) || (vap->va_nlink != VNOVAL) ||
 	    (vap->va_fsid != VNOVAL) || (vap->va_fileid != VNOVAL) ||
 	    (vap->va_blocksize != VNOVAL) || (vap->va_rdev != VNOVAL) ||
@@ -833,40 +846,7 @@ virtfs_setattr(struct vop_setattr_args *ap)
 		p9_debug(VOPS, "%s: unsettable attribute\n", __func__);
 		return (EINVAL);
 	}
-
-	if (vap->va_flags != VNOVAL) {
-		p9_debug(VOPS, "%s: vp:%p td:%p flags:%lx\n", __func__, vp,
-		    td, vap->va_flags);
-
-		if (vp->v_mount->mnt_flag & MNT_RDONLY)
-			return (EROFS);
-		/*
-		 * Callers may only modify the file flags on objects they
-		 * have VADMIN rights for.
-		 */
-		if ((error = VOP_ACCESS(vp, VADMIN, cred, td)))
-			return (error);
-	}
-
-	if (vap->va_size != (u_quad_t)VNOVAL) {
-		p9_debug(VOPS, "%s: vp:%p td:%p size:%jx\n", __func__, vp, td,
-		    (uintmax_t)vap->va_size);
-
-		switch (vp->v_type) {
-		case VDIR:
-			return (EISDIR);
-		case VLNK:
-		case VREG:
-			if (vp->v_mount->mnt_flag & MNT_RDONLY)
-				return (EROFS);
-			break;
-		default:
-			return (0);
-		}
-
-
-		return (0);
-	}
+        /* Check if we need to change the ownership of the file*/
 
 	if (vap->va_uid != (uid_t)VNOVAL || vap->va_gid != (gid_t)VNOVAL) {
 		if (vp->v_mount->mnt_flag & MNT_RDONLY)
@@ -878,6 +858,7 @@ virtfs_setattr(struct vop_setattr_args *ap)
 			return (error);
 	}
 
+        /* Check for mode changes */
 	if (vap->va_mode != (mode_t)VNOVAL) {
 		if (vp->v_mount->mnt_flag & MNT_RDONLY)
 			return (EROFS);
@@ -888,6 +869,7 @@ virtfs_setattr(struct vop_setattr_args *ap)
 		if (error)
 			return (error);
 	}
+
 	if (vap->va_atime.tv_sec != VNOVAL ||
 	    vap->va_mtime.tv_sec != VNOVAL ||
 	    vap->va_birthtime.tv_sec != VNOVAL) {
@@ -948,7 +930,7 @@ virtfs_read(struct vop_read_args *ap)
 	while ((resid = uio->uio_resid) > 0) {
 		if (offset >= filesize)
 			break;
-		count = MIN(filesize - uio->uio_offset, resid);
+		count = min(filesize - uio->uio_offset, resid);
 		if (count == 0)
 			break;
 
@@ -1225,7 +1207,7 @@ virtfs_symlink(struct vop_symlink_args *ap)
 	struct vnode *dvp = ap->a_dvp;
         struct vnode **vpp = ap->a_vpp;
         struct componentname *cnp = ap->a_cnp;
-        uint16_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
+        uint32_t mode = MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode);
         struct virtfs_node *dir_node = VTON(dvp);
 	struct virtfs_inode *inode = &dir_node->inode;
 	uint32_t perm;
@@ -1244,11 +1226,12 @@ virtfs_symlink(struct vop_symlink_args *ap)
 	return ret;
 }
 
-static void
+/*static void
 dump_p9dirent(struct dirent *p)
 {
 	printf("name :%s d_reclen%hu d_type:%hhu ino_%hu \n",p->d_name,p->d_reclen,p->d_type,p->d_fileno);
 }
+*/
 
 /*
  * Minimum length for a directory entry: size of fixed size section of
@@ -1260,85 +1243,112 @@ virtfs_readdir(struct vop_readdir_args *ap)
 	struct uio *uio = ap->a_uio;
         struct vnode *vp = ap->a_vp;
         struct dirent cde;
-	uint64_t offset = 0,diroffset;
+	uint64_t offset = 0, diroffset = 0;
 	struct virtfs_node *np = VTON(ap->a_vp);
         int error = 0;
-	int count = 0;
+	uint32_t count = 0;
 	uint64_t file_size;
+	uint64_t resid;
 	struct p9_client *clnt = np->virtfs_ses->clnt;
+	struct p9_dirent dent;
 
 	if (ap->a_uio->uio_iov->iov_len <= 0)
-		return (EINVAL);
+		return EINVAL;
 
 	if (vp->v_type != VDIR)
-		return (ENOTDIR);
+		return ENOTDIR;
 
 	file_size = np->inode.i_size;
 
 	if (uio->uio_offset >= file_size)
+	{
+		printf("file_size enoent ..\n");
 		return ENOENT;
+	}
 
         p9_debug(VOPS, "virtfs_readdir filesize %jd resid %zd\n",
 	   (uintmax_t)file_size, uio->uio_resid);
 
-	/* Make sure to zeroize the buffer */
 	memset(clnt->io_buffer, 0, clnt->msize);
-
-
-	count = min(clnt->msize, uio->uio_resid);
-
-	offset = 0;
+	memset(&dent, 0, sizeof(dent));
 	/* We havnt reached the end yet. read more. */
         if ((uio->uio_resid >= sizeof(struct dirent))) {
+
                 diroffset = uio->uio_offset;
 
-		/* For now we assume our buffer 8K is enough for entries */
-		count = p9_client_readdir(np->vofid, (char *)clnt->io_buffer,
-			diroffset, count); /* The max size our client can handle */
+		while (diroffset < file_size && (resid = uio->uio_resid) > 0) {
 
-		if (count < 0) {
-			return (EIO);
-		}
-
-		while (offset + QEMU_DIRENTRY_SZ <= count) { // We dont have enough bytes.
-
-			/* Read and make sense out of the buffer in one dirent
-			 * This is part of 9p protocol read.
-			 * This reads one p9_dirent, now append it to dirent(FREEBSD specifc)
-			 * and continuing with the parse
-			 */
-			memset(&cde, 0, sizeof(struct dirent));
-			offset = p9_dirent_read(clnt, clnt->io_buffer, offset, count,
-				&cde);
-
-			if (offset < 0)
-				return EIO;
-
-			cde.d_reclen = GENERIC_DIRSIZ(&cde);
-			/*
-			 * If there isn't enough space in the uio to return a
-			 * whole dirent, break off read
-			 */
-			if (uio->uio_resid < GENERIC_DIRSIZ(&cde))
+			printf("diroffset %llu count%u file_size %llu\n",diroffset,count,file_size);
+			/* Make sure to zeroize the buffer */
+		   	if (diroffset >= file_size)
+				break;
+			count = min(file_size - uio->uio_offset, resid);
+			if (count == 0)
 				break;
 
-			// Fix this number otherwise it ll break the vfs readir
-			//cde.d_fileno = 23+offset;
-			dump_p9dirent(&cde);
-			/* Transfer */
-			error = uiomove(&cde, GENERIC_DIRSIZ(&cde), uio);
+			printf(" why is count :%u\n",count);
+			/* For now we assume our buffer 8K is enough for entries */
+			count = p9_client_readdir(np->vofid, (char *)clnt->io_buffer,
+				diroffset, count); /* The max size our client can handle */
 
-			if (error)
-				return error;
-			diroffset += cde.d_reclen; // We have added a new direntry.
-		}
-	}
+			printf("count%u\n",count);
+			if( count == 0) break;
+
+			if (count < 0) {
+				return EIO;
+			}
+
+			offset = 0;
+
+			// Parse through the buffer to make the direntries.
+			while (offset + QEMU_DIRENTRY_SZ <= count) {
+
+				/* Read and make sense out of the buffer in one dirent
+				 * This is part of 9p protocol read.
+				 * This reads one p9_dirent, now append it to dirent(FREEBSD specifc)
+				 * and continuing with the parse
+				 */
+				memset(&cde, 0, sizeof(struct dirent));
+				offset = p9_dirent_read(clnt, clnt->io_buffer, offset, count,
+					&dent);
+
+				if (offset < 0 || offset > count) // We are beyond count ?
+					return EIO;
+
+				// Copy back the dent into the cde.
+				strncpy(cde.d_name , dent.d_name, dent.len);
+                                memcpy(&cde.d_fileno, &dent.qid, sizeof(ino_t));
+                                cde.d_type = dent.d_type;
+				cde.d_namlen = dent.len;
+
+				cde.d_reclen = GENERIC_DIRSIZ(&cde);
+
+				printf("offset in the buffer:%d  %d \n",offset,cde.d_reclen);
+				/*
+				 * If there isn't enough space in the uio to return a
+				 * whole dirent, break off read
+				 */
+				if (uio->uio_resid < GENERIC_DIRSIZ(&cde))
+					break;
+
+				// Fix this number otherwise it ll break the vfs readir
+				cde.d_fileno = 23+offset;
+				//dump_p9dirent(&cde);
+				/* Transfer */
+				error = uiomove(&cde, GENERIC_DIRSIZ(&cde), uio);
+
+				if (error)
+					return error;
+				printf("rec len :%d  %lu \n",cde.d_reclen,uio->uio_offset);
+				diroffset = dent.d_off; // We have added a new direntry.
+			}
+		 }
+	} /// this is for the if conditions
 	/* Pass on last transferred offset */
 	uio->uio_offset = diroffset;
 
-	if (ap->a_eofflag) {
-		*ap->a_eofflag = 1;
-	}
+	 if (ap->a_eofflag)
+                *ap->a_eofflag = (uio->uio_offset >= file_size);
 
 	return (error);
 }

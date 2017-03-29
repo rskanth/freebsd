@@ -33,7 +33,7 @@
 #include "../protocol.h"
 #include "../9p.h"
 
-int p9_debug_level = 0;//0xFFFF;
+int p9_debug_level = 0xFFFF;
 
 struct p9_req_t *p9_get_request(void);
 void p9_client_begin_disconnect(struct p9_client *clnt);
@@ -63,7 +63,7 @@ inline int p9_is_proto_dotu(struct p9_client *clnt)
 	return clnt->proto_version == p9_proto_2000u;
 }
 
-static int 
+static int
 p9_parse_opts(struct mount  *mp, struct p9_client *clnt)
 {
 	char *trans;
@@ -78,9 +78,9 @@ p9_parse_opts(struct mount  *mp, struct p9_client *clnt)
         	return (error);
 
 	p9_debug(TRANS, " Attaching to the %s transport \n",trans);
-	/* 
-         * This will be moved to mod where we can have multiple entries in the 
-	 * table to search for and return the correct pointer. For now just get 
+	/*
+         * This will be moved to mod where we can have multiple entries in the
+	 * table to search for and return the correct pointer. For now just get
          * the default virtio_ops.
 	 */
     	clnt->trans_mod = p9_get_default_trans();
@@ -208,7 +208,7 @@ p9_client_check_return(struct p9_client *c,
         }
 	/* No error , We are done with the preprocessing. Return to the caller
 	 * and process the actual data.
-	 */ 
+	 */
         if (req->rc->id != P9PROTO_RERROR)
                 return 0;
 
@@ -271,11 +271,11 @@ p9_client_request(struct p9_client *c, int8_t type, const char *fmt, ...)
 
 	if (err)
 		goto error;
-	/* Before we return the req (receive buffer and process it) 
+	/* Before we return the req (receive buffer and process it)
          * we pre process the header to fill in the rc before calling
 	 * into the protocol infra to analyze the data.
 	 */
-	err = p9_client_check_return(c, req);	
+	err = p9_client_check_return(c, req);
 	if (err)
 		goto error;
 
@@ -586,7 +586,7 @@ error:
 }
 
 /* oldfid is the fid of the directory. We need to search the component name
- * present in wnames 
+ * present in wnames
  */
 struct p9_fid *p9_client_walk(struct p9_fid *oldfid, uint16_t nwname,
 		char **wnames, int clone)
@@ -798,10 +798,11 @@ error:
 	return err;
 }
 
-int 
+int
 p9_client_readdir(struct p9_fid *fid, char *data, uint64_t offset, uint32_t count)
 {
 	int err;
+	uint32_t rsize;
 	struct p9_client *clnt;
 	struct p9_req_t *req = NULL;
 	char *dataptr;
@@ -809,11 +810,21 @@ p9_client_readdir(struct p9_fid *fid, char *data, uint64_t offset, uint32_t coun
 	p9_debug(TRANS, "TREADDIR fid %d offset %llu count %d\n",
 				fid->fid, (unsigned long long) offset, count);
 
-	err = 0;
+	rsize = fid->mtu;
 	clnt = fid->clnt;
 
+	if (!rsize || rsize > clnt->msize)
+                  rsize = clnt->msize;
+
+        if (count < rsize)
+		rsize = count;
+
+	err = 0;
+
+	printf("count rsize :%u %u\n",count,rsize);
+
 	req = p9_client_request(clnt, P9PROTO_TREADDIR, "dqd", fid->fid,
-			    offset, count);
+			    offset, rsize);
 	if (req == NULL) {
 		err = ENOMEM;
 		goto error;
@@ -824,7 +835,7 @@ p9_client_readdir(struct p9_fid *fid, char *data, uint64_t offset, uint32_t coun
 		goto error;
 	}
 
-	p9_debug(TRANS, "RREADDIR count %d\n", count);
+	p9_debug(TRANS, "RREADDIR count %u\n", count);
 
 	/* Copy back the data into the input buffer. */
 	memmove(data, dataptr, count);
@@ -892,7 +903,7 @@ p9_client_read(struct p9_fid *fid, uint64_t offset, uint32_t count, char *data)
 error:
 	if (req)
 		p9_free_req(req);
-	return error;	
+	return error;
 }
 
 int
@@ -951,7 +962,7 @@ error:
 	return err;
 }
 
-int 
+int
 p9_client_file_create(struct p9_fid *fid, char *name, uint32_t perm, int mode,
                      char *extension)
 {

@@ -30,7 +30,7 @@
 
 struct virtfs_session;
 
-/* The in memory representation of the on disk inode. Save the current 
+/* The in memory representation of the on disk inode. Save the current
  * fields to write it back later. */
 /* This is the exact same as stat.*/
 struct virtfs_inode {
@@ -39,7 +39,7 @@ struct virtfs_inode {
 	uint64_t i_size;
         uint16_t i_type;
         uint32_t i_dev;
-        uint32_t i_mode; 
+        uint32_t i_mode;
         uint32_t i_atime;
         uint32_t i_mtime;
         uint64_t i_length;

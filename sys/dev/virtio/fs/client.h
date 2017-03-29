@@ -65,6 +65,16 @@ struct p9_fid {
 	uint32_t mtu;
 	uid_t uid;      // this is the uid for this fid.
 };
+// THis is how we read every dentry on the wire.
+struct p9_dirent {
+        struct p9_qid qid;
+        uint64_t d_off;
+        unsigned char d_type;
+        char d_name[256];
+	int len;
+};
+
+
 
 /* Session and client Init Ops */
 
@@ -91,7 +101,7 @@ int p9_client_file_create(struct p9_fid *fid, char *name, uint32_t perm, int mod
 int p9_client_remove(struct p9_fid *fid);
 
 int p9_dirent_read(struct p9_client *clnt, char *buf, int start, int len,
-		  struct dirent *dirent);
+		  struct p9_dirent *dirent);
 struct p9_wstat *p9_client_stat(struct p9_fid *fid);
 int p9_client_wstat(struct p9_fid *fid, struct p9_wstat *wst);
 int p9_client_setattr(struct p9_fid *fid, struct p9_iattr_dotl *attr);
